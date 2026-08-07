@@ -18,13 +18,13 @@ import { defaultButtonStyles, defaultInputBoxStyles } from '../../../../../platf
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { mcpAccessConfig, McpAccessValue } from '../../../../../platform/mcp/common/mcpManagement.js';
-import { IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState, McpServerInstallState, IMcpService, IMcpServer } from '../../../../contrib/mcp/common/mcpTypes.js';
+import { IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState, McpServerInstallState, IMcpService, IMcpServer, McpServerCacheState, McpServerTransportType } from '../../../../contrib/mcp/common/mcpTypes.js';
 import { IMcpRegistry } from '../../../mcp/common/mcpRegistryTypes.js';
 import { MCP_PLUGIN_COLLECTION_ID_PREFIX } from '../../../mcp/common/discovery/pluginMcpDiscovery.js';
 import { ExtensionIdentifier } from '../../../../../platform/extensions/common/extensions.js';
 import { ContributionEnablementState, isContributionDisabled } from '../../common/enablement.js';
 import { McpCommandIds } from '../../../../contrib/mcp/common/mcpCommandIds.js';
-import { autorun } from '../../../../../base/common/observable.js';
+import { autorun, IReader } from '../../../../../base/common/observable.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { InputBox } from '../../../../../base/browser/ui/inputbox/inputBox.js';
@@ -51,8 +51,12 @@ import { IOutputService } from '../../../../services/output/common/output.js';
 
 const $ = DOM.$;
 
-const MCP_ITEM_HEIGHT = 36;
+// One height for every row. Line two always carries at least the server's origin, so there is
+// no longer a "description-less" variant to shrink for, and the list reads as a single column.
+const MCP_ITEM_HEIGHT = 44;
 const MCP_ITEM_WITH_DESCRIPTION_HEIGHT = 44;
+
+const mcpToolsIcon = Codicon.tools;
 
 const PLUGIN_COLLECTION_PREFIX = MCP_PLUGIN_COLLECTION_ID_PREFIX;
 
@@ -64,6 +68,56 @@ function isCopilotExtension(id: ExtensionIdentifier): boolean {
 
 function getPluginUriFromCollectionId(collectionId: string | undefined): string | undefined {
 	return collectionId?.startsWith(PLUGIN_COLLECTION_PREFIX) ? collectionId.slice(PLUGIN_COLLECTION_PREFIX.length) : undefined;
+}
+
+/** Where a server came from, phrased for line two of a row. */
+function getCollectionOriginLabel(collectionId: string | undefined): string {
+	if (collectionId?.startsWith(PLUGIN_COLLECTION_PREFIX)) {
+		return localize('originPlugin', "Plugin");
+	}
+	if (collectionId?.startsWith('ext.')) {
+		return localize('originExtension', "Extension");
+	}
+	return localize('originBuiltin', "Built-in");
+}
+
+function getScopeOriginLabel(scope: LocalMcpServerScope | undefined): string | undefined {
+	switch (scope) {
+		case LocalMcpServerScope.Workspace:
+			return localize('originWorkspace', "Workspace");
+		case LocalMcpServerScope.User:
+			return localize('originUser', "User");
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * Reads the facts a row shows about a running server. Tools are read even when the server is
+ * stopped: {@link McpServerCacheState.Cached} means we know what it offers from its last run,
+ * which is exactly what someone deciding whether to enable it wants to see.
+ */
+function readServerFacts(server: IMcpServer | undefined, reader: IReader): { toolCount?: number; toolsFromCache?: boolean; transport?: string } {
+	if (!server) {
+		return {};
+	}
+
+	const cacheState = server.cacheState.read(reader);
+	const tools = server.tools.read(reader);
+	const toolsFromCache = cacheState === McpServerCacheState.Cached || cacheState === McpServerCacheState.Outdated;
+
+	const launch = server.readDefinitions().read(reader).server?.launch;
+	const transport = launch?.type === McpServerTransportType.HTTP
+		? localize('transportHttp', "HTTP")
+		: launch?.type === McpServerTransportType.Stdio
+			? localize('transportLocal', "Local")
+			: undefined;
+
+	return {
+		toolCount: cacheState === McpServerCacheState.Unknown ? undefined : tools.length,
+		toolsFromCache,
+		transport,
+	};
 }
 
 /**
@@ -156,10 +210,32 @@ interface IMcpServerItemTemplateData {
 	readonly container: HTMLElement;
 	readonly typeIcon: HTMLElement;
 	readonly name: HTMLElement;
+	/** Status word + dot, rendered next to the name so state reads as part of the server's identity. */
+	readonly status: HTMLElement;
 	readonly description: HTMLElement;
 	readonly actions: HTMLElement;
 	readonly elementDisposables: DisposableStore;
 	readonly actionDisposables: DisposableStore;
+	/** Static, per-element facts that the dynamic status update needs to re-render line two. */
+	context: IMcpRowContext;
+}
+
+/** The parts of a row that don't change while the row is bound to an element. */
+interface IMcpRowContext {
+	/** Where the server came from, e.g. "Workspace", "Built-in". Always shown, so line two is never empty. */
+	readonly origin?: string;
+	readonly description?: string;
+}
+
+/** The parts of a row that come from observables and change while the row is bound. */
+interface IMcpRowState {
+	readonly status: McpStatusKind | undefined;
+	/** Populated for {@link McpConnectionState.Kind.Error} so the failure can be read in place. */
+	readonly errorMessage?: string;
+	readonly toolCount?: number;
+	/** Tools came from {@link McpServerCacheState.Cached}, i.e. they're last-known rather than live. */
+	readonly toolsFromCache?: boolean;
+	readonly transport?: string;
 }
 
 /**
@@ -187,6 +263,9 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		const details = DOM.append(container, $('.mcp-server-details'));
 		const nameRow = DOM.append(details, $('.mcp-server-name-row'));
 		const name = DOM.append(nameRow, $('.mcp-server-name'));
+		// Status sits next to the name, not in the far-right actions slot: it describes the
+		// server, so it belongs where the eye already is when reading which server this is.
+		const status = DOM.append(nameRow, $('.mcp-server-status'));
 
 		const description = DOM.append(details, $('.mcp-server-description'));
 
@@ -196,10 +275,12 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			container,
 			typeIcon,
 			name,
+			status,
 			description,
 			actions,
 			elementDisposables: new DisposableStore(),
 			actionDisposables: new DisposableStore(),
+			context: {},
 		};
 	}
 
@@ -211,13 +292,10 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			templateData.container.classList.add('builtin');
 			templateData.container.classList.toggle('has-detail', false);
 			templateData.name.textContent = formatDisplayName(element.label);
-			if (element.description) {
-				templateData.description.textContent = truncateToFirstLine(element.description);
-				templateData.description.style.display = '';
-			} else {
-				templateData.description.textContent = '';
-				templateData.description.style.display = 'none';
-			}
+			templateData.context = {
+				origin: getCollectionOriginLabel(element.collectionId),
+				description: element.description ? truncateToFirstLine(element.description) : undefined,
+			};
 			this.updateKnownServerStatus(templateData, element);
 
 			// Add hover with plugin provenance for plugin-sourced builtin items
@@ -241,8 +319,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			templateData.container.classList.remove('builtin');
 			templateData.container.classList.toggle('has-detail', false);
 			templateData.name.textContent = formatDisplayName(element.server.name);
-			templateData.description.textContent = '';
-			templateData.description.style.display = 'none';
+			templateData.context = { origin: localize('originSession', "Session") };
 			this.updateActiveSessionStatus(templateData, element);
 			return;
 		}
@@ -256,13 +333,10 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		const isGallery = !element.server.local;
 		const hasDetail = !!description || isGallery;
 		templateData.container.classList.toggle('has-detail', hasDetail);
-		if (description) {
-			templateData.description.textContent = truncateToFirstLine(description);
-			templateData.description.style.display = '';
-		} else {
-			templateData.description.textContent = '';
-			templateData.description.style.display = 'none';
-		}
+		templateData.context = {
+			origin: isGallery ? undefined : getScopeOriginLabel(element.server.local?.scope),
+			description: description ? truncateToFirstLine(description) : undefined,
+		};
 
 		if (element.activeSessionServer) {
 			this.updateKnownServerStatus(templateData, element);
@@ -273,34 +347,66 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 				const disabled = element.localServer ? isContributionDisabled(element.localServer.enablement.read(reader)) : false;
 				const connectionState = element.localServer?.connectionState.read(reader);
 				templateData.container.classList.toggle('disabled', disabled);
-				this.updateStatus(templateData, element, disabled ? 'disabled' : connectionState?.state);
+				this.updateStatus(templateData, element, {
+					// An installed server that isn't running is idle, not stateless. Only gallery
+					// entries — which the user hasn't installed — legitimately have no status.
+					status: disabled ? 'disabled' : connectionState?.state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped),
+					errorMessage: connectionState?.state === McpConnectionState.Kind.Error ? connectionState.message : undefined,
+					...readServerFacts(element.localServer, reader),
+				});
 			}));
 		}
 	}
 
 	private updateKnownServerStatus(templateData: IMcpServerItemTemplateData, element: IMcpServerItemEntry | IMcpBuiltinItemEntry): void {
+		const isGallery = element.type === 'server-item' && !element.server.local;
 		templateData.elementDisposables.add(autorun(reader => {
 			const localDisabled = element.localServer ? isContributionDisabled(element.localServer.enablement.read(reader)) : false;
 			const activeSessionServer = element.activeSessionServer;
 			templateData.container.classList.toggle('disabled', localDisabled || activeSessionServer?.enabled === false);
-			this.updateStatus(templateData, element, localDisabled ? 'disabled' : activeSessionServer ? (activeSessionServer.enabled ? activeSessionServer.status : 'disabled') : undefined);
+			const connectionState = element.localServer?.connectionState.read(reader);
+
+			let status: McpStatusKind | undefined;
+			if (localDisabled) {
+				status = 'disabled';
+			} else if (activeSessionServer) {
+				status = activeSessionServer.enabled ? activeSessionServer.status : 'disabled';
+			} else {
+				status = connectionState?.state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped);
+			}
+
+			this.updateStatus(templateData, element, {
+				status,
+				errorMessage: connectionState?.state === McpConnectionState.Kind.Error ? connectionState.message : undefined,
+				...readServerFacts(element.localServer, reader),
+			});
 		}));
 	}
 
 	private updateActiveSessionStatus(templateData: IMcpServerItemTemplateData, element: IMcpSessionServerItemEntry): void {
 		const disabled = element.server.enabled === false;
 		templateData.container.classList.toggle('disabled', disabled);
-		this.updateStatus(templateData, element, disabled ? 'disabled' : element.server.status);
+		this.updateStatus(templateData, element, { status: disabled ? 'disabled' : element.server.status });
 	}
 
-	private updateStatus(templateData: IMcpServerItemTemplateData, element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, state: McpStatusKind | undefined): void {
+	private updateStatus(templateData: IMcpServerItemTemplateData, element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, rowState: IMcpRowState): void {
 		templateData.actionDisposables.clear();
 		DOM.clearNode(templateData.actions);
+		DOM.clearNode(templateData.status);
+		templateData.status.className = 'mcp-server-status';
 
+		const { status: state, errorMessage } = rowState;
+
+		// Status reads as a word next to the name. Every state gets one, including the states that
+		// previously resolved to an icon-less presentation and therefore rendered nothing at all.
 		const presentation = getMcpStatusPresentation(state);
-		if (!presentation) {
-			return;
+		if (presentation) {
+			templateData.status.classList.add(presentation.className);
+			DOM.append(templateData.status, $('.mcp-server-status-dot'));
+			DOM.append(templateData.status, $('.mcp-server-status-label')).textContent = presentation.label;
 		}
+
+		this.renderMetaLine(templateData, rowState);
 
 		const activeSessionServer = getActiveSessionServer(element);
 		const label = getMcpEntryLabel(element);
@@ -308,6 +414,20 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		const showActiveSessionOutput = activeSessionServer
 			? (beforeShow?: () => Promise<void>) => this.agentHostCustomizationService.showMcpServerLog(activeSessionResource, activeSessionServer.id, beforeShow)
 			: undefined;
+
+		if (rowState.toolCount !== undefined && rowState.toolCount > 0) {
+			const toolsElement = DOM.append(templateData.actions, $('.mcp-server-tools'));
+			toolsElement.classList.toggle('is-cached', !!rowState.toolsFromCache);
+			DOM.append(toolsElement, $('span')).classList.add(...ThemeIcon.asClassNameArray(mcpToolsIcon));
+			DOM.append(toolsElement, $('span')).textContent = String(rowState.toolCount);
+			templateData.actionDisposables.add(this.hoverService.setupManagedHover(
+				getDefaultHoverDelegate('element'),
+				toolsElement,
+				rowState.toolsFromCache
+					? localize('mcpToolsCached', "{0} tools, from the last time this server ran", rowState.toolCount)
+					: localize('mcpTools', "{0} tools", rowState.toolCount)));
+		}
+
 		if (state === McpServerStatus.AuthRequired && activeSessionServer) {
 			const signInLabel = localize('signInToMcpServer', "Sign in to {0}", label);
 			const signInButton = templateData.actionDisposables.add(new Button(templateData.actions, {
@@ -318,7 +438,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 				ariaLabel: signInLabel,
 			}));
 			signInButton.label = localize('signIn', "Sign In");
-			signInButton.element.classList.add('mcp-server-sign-in');
+			signInButton.element.classList.add('mcp-server-inline-button', 'mcp-server-sign-in');
 			registerMcpInlineButtonAction(templateData.actionDisposables, signInButton, async () => {
 				signInButton.enabled = false;
 				try {
@@ -329,29 +449,79 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			});
 		}
 
-		if (!presentation.icon) {
-			return;
-		}
-
+		// The error text itself is already on line two. This is the escape hatch to the full log,
+		// and it is an explicit, labelled action rather than the only way to learn a row failed.
 		const showOutput = state === McpServerStatus.Error || state === McpConnectionState.Kind.Error
 			? getMcpServerOutputHandler(this.outputService, element.type === 'session-server-item' ? undefined : element.localServer, activeSessionServer, this._afterShowOutput, showActiveSessionOutput)
 			: undefined;
 		if (showOutput) {
 			const showOutputLabel = localize('showMcpServerOutput', "Show output for {0}", label);
-			const statusButton = templateData.actionDisposables.add(new Button(templateData.actions, {
+			const outputButton = templateData.actionDisposables.add(new Button(templateData.actions, {
+				...defaultButtonStyles,
+				secondary: true,
+				small: true,
 				title: showOutputLabel,
 				ariaLabel: showOutputLabel,
 			}));
-			statusButton.icon = presentation.icon;
-			statusButton.element.classList.add('mcp-server-status', 'mcp-server-status-action', presentation.className);
-			registerMcpInlineButtonAction(templateData.actionDisposables, statusButton, showOutput);
+			outputButton.label = localize('showOutput', "Show Output");
+			outputButton.element.classList.add('mcp-server-inline-button');
+			registerMcpInlineButtonAction(templateData.actionDisposables, outputButton, showOutput);
+		}
+
+		if (errorMessage) {
+			templateData.actionDisposables.add(this.hoverService.setupDelayedHover(templateData.container, () => ({
+				content: errorMessage,
+				appearance: { compact: false, skipFadeInAnimation: true },
+			})));
+		}
+	}
+
+	/**
+	 * Renders line two: where the server came from, how it connects, and either the failure
+	 * reason or the description. Origin is always known, so the line is never blank and rows
+	 * can share a single height.
+	 */
+	private renderMetaLine(templateData: IMcpServerItemTemplateData, rowState: IMcpRowState): void {
+		DOM.clearNode(templateData.description);
+		templateData.description.classList.toggle('is-error', !!rowState.errorMessage);
+
+		const parts: { text: string; isError?: boolean; isContext?: boolean }[] = [];
+		if (templateData.context.origin) {
+			parts.push({ text: templateData.context.origin, isContext: true });
+		}
+		// Transport is context you only care about when things work. A failure needs every
+		// pixel of this line, so it drops out rather than truncating the error to nothing.
+		if (rowState.transport && !rowState.errorMessage) {
+			parts.push({ text: rowState.transport, isContext: true });
+		}
+
+		// A failure replaces the description: when something is broken, that is the only thing
+		// on this line worth the user's attention.
+		if (rowState.errorMessage) {
+			parts.push({ text: truncateToFirstLine(rowState.errorMessage), isError: true });
+		} else if (templateData.context.description) {
+			parts.push({ text: templateData.context.description });
+		}
+
+		if (!parts.length) {
+			templateData.description.style.display = 'none';
 			return;
 		}
 
-		const statusElement = DOM.append(templateData.actions, $('.mcp-server-status'));
-		statusElement.classList.add(presentation.className, ...ThemeIcon.asClassNameArray(presentation.icon));
-		statusElement.setAttribute('aria-hidden', 'true');
-		templateData.actionDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), statusElement, presentation.label));
+		templateData.description.style.display = '';
+		parts.forEach((part, index) => {
+			if (index > 0) {
+				DOM.append(templateData.description, $('span.mcp-server-meta-separator')).textContent = '·';
+			}
+			const span = DOM.append(templateData.description, $('span'));
+			span.textContent = part.text;
+			if (part.isError) {
+				span.classList.add('mcp-server-meta-error');
+			}
+			if (part.isContext) {
+				span.classList.add('mcp-server-meta-context');
+			}
+		});
 	}
 
 	disposeTemplate(templateData: IMcpServerItemTemplateData): void {
@@ -398,7 +568,6 @@ export function getMcpServerOutputHandler(outputService: Pick<IOutputService, 's
 interface IMcpStatusPresentation {
 	readonly label: string;
 	readonly className: string;
-	readonly icon?: ThemeIcon;
 }
 
 function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcpStatusPresentation | undefined {
@@ -406,24 +575,24 @@ function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcpStatusP
 		return undefined;
 	}
 	if (state === 'disabled') {
-		return { label: localize('disabled', "Disabled"), className: 'disabled', icon: Codicon.circleSlash };
+		return { label: localize('disabled', "Off"), className: 'disabled' };
 	}
 	switch (state) {
 		case McpConnectionState.Kind.Running:
 		case McpServerStatus.Ready:
-			return { label: localize('running', "Running"), className: 'running', icon: Codicon.check };
+			return { label: localize('running', "Running"), className: 'running' };
 		case McpConnectionState.Kind.Starting:
 		case McpServerStatus.Starting:
-			return { label: localize('starting', "Starting"), className: 'starting', icon: ThemeIcon.modify(Codicon.loading, 'spin') };
+			return { label: localize('starting', "Starting"), className: 'starting' };
 		case McpServerStatus.AuthRequired:
-			return { label: localize('authRequired', "Authentication required"), className: 'auth-required', icon: Codicon.account };
+			return { label: localize('authRequired', "Sign-in needed"), className: 'auth-required' };
 		case McpConnectionState.Kind.Error:
 		case McpServerStatus.Error:
-			return { label: localize('error', "Error"), className: 'error', icon: Codicon.error };
+			return { label: localize('error', "Failed"), className: 'error' };
 		case McpConnectionState.Kind.Stopped:
 		case McpServerStatus.Stopped:
 		default:
-			return { label: localize('stopped', "Stopped"), className: 'stopped' };
+			return { label: localize('stopped', "Idle"), className: 'stopped' };
 	}
 }
 
@@ -783,8 +952,7 @@ export class McpListWidget extends Disposable {
 	private addButton!: Button;
 
 	private filteredServers: IWorkbenchMcpServer[] = [];
-	private filteredBuiltinCount = 0;
-	private filteredActiveSessionCount = 0;
+	private totalServerCount = 0;
 	private displayEntries: IMcpListEntry[] = [];
 	private galleryServers: IWorkbenchMcpServer[] = [];
 	private searchQuery: string = '';
@@ -934,8 +1102,7 @@ export class McpListWidget extends Disposable {
 			title: localize('addServer', "Add Server"),
 			ariaLabel: localize('addServer', "Add Server")
 		}));
-		this.addButton.label = `$(${Codicon.add.id})`;
-		this.addButton.element.classList.add('list-icon-button');
+		this.addButton.label = `$(${Codicon.add.id}) ${localize('addServer', "Add Server")}`;
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.addButton.element, localize('addServerTooltip', "Add Server")));
 		this._register(this.addButton.onDidClick(() => {
 			this.commandService.executeCommand(McpCommandIds.AddConfiguration);
@@ -1183,23 +1350,23 @@ export class McpListWidget extends Disposable {
 		const activeSessionMatcher = new ActiveSessionMcpServerMatcher(this.agentHostCustomizationService.getMcpServers(activeSessionResource));
 		const localServerMatcher = new LocalMcpServerMatcher(this.mcpService.servers.get());
 
-		if (query) {
-			this.filteredServers = this.mcpWorkbenchService.local.filter(server =>
-				server.label.toLowerCase().includes(query) ||
-				(server.description?.toLowerCase().includes(query))
-			);
-		} else {
-			this.filteredServers = [...this.mcpWorkbenchService.local];
-		}
+		const matchesQuery = (label: string, description?: string): boolean =>
+			!query || label.toLowerCase().includes(query) || !!description?.toLowerCase().includes(query);
 
-		// Find extension-provided servers not in the local list (e.g. GitHub MCP)
-		const localIds = new Set(this.filteredServers.map(s => s.id));
+		this.filteredServers = query
+			? this.mcpWorkbenchService.local.filter(server => matchesQuery(server.label, server.description))
+			: [...this.mcpWorkbenchService.local];
+
+		// Find extension-provided servers not in the local list (e.g. GitHub MCP). Dedupe against
+		// the *unfiltered* local list: a local server hidden by the query must still suppress its
+		// runtime twin, otherwise searching makes duplicates appear.
+		const localIds = new Set(this.mcpWorkbenchService.local.map(s => s.id));
 		const builtinServers = this.mcpService.servers.get()
 			.filter(s => !localIds.has(s.definition.id))
-			.filter(s => !query || s.definition.label.toLowerCase().includes(query));
+			.filter(s => matchesQuery(s.definition.label));
 
 		const groups: { scope: LocalMcpServerScope; label: string; icon: ThemeIcon; description: string; entries: Array<IMcpServerItemEntry | IMcpSessionServerItemEntry> }[] = [
-			{ scope: LocalMcpServerScope.Workspace, label: localize('workspaceGroup', "Workspace"), icon: workspaceIcon, description: localize('workspaceGroupDescription', "MCP servers configured in your workspace or reported by the active session."), entries: [] },
+			{ scope: LocalMcpServerScope.Workspace, label: localize('workspaceGroup', "Workspace"), icon: workspaceIcon, description: localize('workspaceGroupDescription', "MCP servers configured in this workspace. Shared with anyone who opens it."), entries: [] },
 			{ scope: LocalMcpServerScope.User, label: localize('userGroup', "User"), icon: userIcon, description: localize('userGroupDescription', "MCP servers configured in your user settings. Private to you and available across all projects."), entries: [] },
 		];
 
@@ -1350,18 +1517,20 @@ export class McpListWidget extends Disposable {
 		this.displayEntries = entries;
 		this.list.splice(0, this.list.length, this.displayEntries);
 
-		// Compute sidebar badge directly from the data arrays (same source as group headers)
-		this.filteredBuiltinCount = builtinServers.length;
-		this.filteredActiveSessionCount = activeSessionOnlyServers.length;
+		// The sidebar badge counts what the user *has*, not what the current search matched.
+		// Deriving it from the filtered arrays made typing in the search box silently rewrite
+		// the tab's badge, which reads as servers disappearing.
+		this.totalServerCount = this.mcpWorkbenchService.local.length
+			+ this.mcpService.servers.get().filter(s => !localIds.has(s.definition.id)).length
+			+ activeSessionMatcher.unmatched('').length;
 		this._onDidChangeItemCount.fire(this.itemCount);
 	}
 
 	/**
-	 * Gets the total item count from the underlying data arrays
-	 * (the same source used to build group headers).
+	 * Total number of MCP servers available, independent of the current search query.
 	 */
 	get itemCount(): number {
-		return this.filteredServers.length + this.filteredBuiltinCount + this.filteredActiveSessionCount;
+		return this.totalServerCount;
 	}
 
 	/**

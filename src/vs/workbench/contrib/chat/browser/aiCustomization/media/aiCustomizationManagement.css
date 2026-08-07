@@ -348,11 +348,15 @@
 	gap: 8px;
 	flex-shrink: 0;
 	padding: 16px 0;
+	/* At narrow widths the buttons keep their labels and the search field would otherwise
+	collapse to a few characters. Wrapping keeps search usable instead. */
+	flex-wrap: wrap;
 }
 
 .ai-customization-list-widget .list-search-container,
 .mcp-list-widget .list-search-container {
-	flex: 1;
+	flex: 1 1 auto;
+	min-width: 160px;
 }
 
 .ai-customization-list-widget .list-search-container .monaco-inputbox,
@@ -607,13 +611,6 @@
 	display: flex;
 	align-items: center;
 	margin-right: 4px;
-}
-
-/* MCP bridged badge — shown inline next to the server name */
-.mcp-server-item .mcp-server-name-row {
-	display: flex;
-	align-items: center;
-	gap: 6px;
 }
 
 .ai-customization-list-item .item-type-icon {
@@ -1594,12 +1591,15 @@
 .mcp-server-item {
 	display: flex;
 	align-items: center;
-	padding: 6px 8px 6px 30px;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80) var(--vscode-spacing-size60) 30px;
 	cursor: pointer;
 	border-radius: var(--vscode-cornerRadius-small);
-	min-height: 32px;
+	min-height: 40px;
 	gap: 10px;
 	box-sizing: border-box;
+	/* The row adapts to its own width, not the window's: the same list renders in the
+	editor, the narrow sidebar, and the embedded picker. */
+	container: mcp-server-row / inline-size;
 }
 
 .mcp-server-item:not(.has-detail):not(.builtin) {
@@ -1612,7 +1612,6 @@
 
 .mcp-server-item.builtin {
 	cursor: default;
-	opacity: 0.85;
 }
 
 .mcp-server-item .mcp-server-icon {
@@ -1627,12 +1626,26 @@
 	min-width: 0;
 }
 
+/* Name and status share a line so state reads as part of the server's identity. */
+.mcp-server-item .mcp-server-name-row {
+	display: flex;
+	/* Center, not baseline: the status dot is an empty box, so baseline alignment
+	would anchor to its bottom edge and drop the status word below the name. */
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+}
+
 .mcp-server-item .mcp-server-name {
 	font-size: var(--vscode-agents-fontSize-body1);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	line-height: 18px;
+	/* Sized to its text, and the only thing that shrinks: status stays pinned to the name
+	instead of drifting away from short names or being pushed off by long ones. */
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 .mcp-server-item .mcp-server-description {
@@ -1642,16 +1655,78 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	line-height: 14px;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+}
+
+.mcp-server-item .mcp-server-description > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	/* Origin and transport are context; they yield their space long before the
+	trailing description or error message does. */
+	flex-shrink: 100;
+	min-width: 0;
+}
+
+/* The trailing part carries the actual information, so it is the last to give up space. */
+.mcp-server-item .mcp-server-description > span:last-child {
+	flex-shrink: 1;
+	min-width: 0;
+}
+
+.mcp-server-item .mcp-server-meta-separator {
+	opacity: 0.6;
+	flex-shrink: 0;
+}
+
+/* Below this width there is not enough room for provenance and the description at once.
+Drop provenance cleanly rather than letting flex squeeze both into stubs. */
+@container mcp-server-row (max-width: 340px) {
+	.mcp-server-item .mcp-server-meta-context,
+	.mcp-server-item .mcp-server-meta-context + .mcp-server-meta-separator {
+		display: none;
+	}
+}
+
+.mcp-server-item .mcp-server-description.is-error {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Only the failure text is red. Origin and transport stay neutral so the eye lands on
+the part that actually needs attention. */
+.mcp-server-item .mcp-server-meta-error {
+	color: var(--vscode-testing-iconFailed, var(--vscode-errorForeground));
 }
 
 .mcp-server-item .mcp-server-actions {
 	flex-shrink: 0;
 	display: flex;
 	align-items: center;
-	gap: var(--vscode-spacing-size40);
+	gap: var(--vscode-spacing-size60);
 }
 
-.mcp-server-item .mcp-server-sign-in.monaco-button {
+.mcp-server-item .mcp-server-tools {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size20);
+	font-size: var(--vscode-agents-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+	flex-shrink: 0;
+}
+
+.mcp-server-item .mcp-server-tools .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+/* Cached tool counts are last-known rather than live, so they read one step quieter. */
+.mcp-server-item .mcp-server-tools.is-cached {
+	opacity: 0.65;
+}
+
+/* Inline row actions (Sign In, Show Output): compact enough to sit inside a 40px row. */
+.mcp-server-item .mcp-server-inline-button.monaco-button {
 	min-width: 0;
 	min-height: var(--vscode-spacing-size240);
 	padding: 0 var(--vscode-spacing-size80);
@@ -1659,27 +1734,27 @@
 	border-radius: var(--vscode-cornerRadius-small);
 }
 
+/* Status: a word, plus a colour dot for redundancy. Never colour alone. */
 .mcp-server-item .mcp-server-status {
-	flex-shrink: 0;
-	width: var(--vscode-spacing-size240);
-	height: var(--vscode-spacing-size240);
+	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
-	justify-content: center;
-	font-size: var(--vscode-codiconFontSize);
+	gap: var(--vscode-spacing-size40);
+	font-size: var(--vscode-agents-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
 }
 
-.mcp-server-item .mcp-server-status-action.monaco-button {
-	min-width: var(--vscode-spacing-size240);
-	min-height: var(--vscode-spacing-size240);
-	padding: var(--vscode-spacing-size40);
-	border: 0;
-	border-radius: var(--vscode-cornerRadius-small);
-	background-color: transparent;
+.mcp-server-item .mcp-server-status:empty {
+	display: none;
 }
 
-.mcp-server-item .mcp-server-status-action.monaco-button:hover {
-	background-color: var(--vscode-toolbar-hoverBackground);
+.mcp-server-item .mcp-server-status-dot {
+	width: var(--vscode-spacing-size40);
+	height: var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: currentColor;
+	flex-shrink: 0;
 }
 
 .mcp-server-item .mcp-server-status.running {
@@ -1698,12 +1773,16 @@
 	color: var(--vscode-testing-iconFailed, var(--vscode-errorForeground));
 }
 
-.mcp-server-item.disabled {
-	opacity: 0.5;
+.mcp-server-item .mcp-server-status.stopped,
+.mcp-server-item .mcp-server-status.disabled {
+	color: var(--vscode-descriptionForeground);
 }
 
-.mcp-server-item .mcp-server-status.disabled {
-	color: var(--vscode-disabledForeground);
+/* Only the name dims when a server is off. Status and errors must stay readable —
+they are the reason the user is looking at the row. */
+.mcp-server-item.disabled .mcp-server-name,
+.mcp-server-item.disabled .mcp-server-description:not(.is-error) {
+	opacity: 0.6;
 }
 
 /* Button group for Add Server + Browse Marketplace */
