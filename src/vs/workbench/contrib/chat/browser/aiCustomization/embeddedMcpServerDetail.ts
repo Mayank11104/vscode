@@ -10,7 +10,7 @@ import { autorun, IReader } from '../../../../../base/common/observable.js';
 import { localize } from '../../../../../nls.js';
 import { LocalMcpServerScope } from '../../../../services/mcp/common/mcpWorkbenchManagementService.js';
 import { McpServerType } from '../../../../../platform/mcp/common/mcpPlatformTypes.js';
-import { IMcpServer, IMcpService, IMcpWorkbenchService, IWorkbenchMcpServer, McpServerCacheState } from '../../../mcp/common/mcpTypes.js';
+import { IMcpServer, IMcpService, IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState, McpServerCacheState } from '../../../mcp/common/mcpTypes.js';
 import { isContributionDisabled } from '../../common/enablement.js';
 import { getMcpStatusPresentation } from './mcpListWidget.js';
 import { findRuntimeMcpServer } from './mcpServerIdentity.js';
@@ -93,11 +93,25 @@ export class EmbeddedMcpServerDetail extends Disposable {
 		this.emptyEl.textContent = localize('mcpDetailEmpty', "No MCP server selected.");
 
 		// Refresh when the underlying server changes (install state, enablement, etc.).
+		//
+		// `undefined` means "something global changed" -- a profile switch, an mcp.json edit,
+		// an enablement write -- and the service rebuilds its server objects when it fires it.
+		// Ignoring it left this pane showing configuration the user had just finished editing,
+		// which is precisely the file this pane exists to point them at.
 		this._register(this.mcpWorkbenchService.onChange(server => {
-			if (this.current && server && server.id === this.current.id) {
-				this.current = server;
-				this.render();
+			if (!this.current) {
+				return;
 			}
+			if (server) {
+				if (server.id === this.current.id) {
+					this.current = server;
+					this.render();
+				}
+				return;
+			}
+			const id = this.current.id;
+			this.current = this.mcpWorkbenchService.local.find(s => s.id === id) ?? this.current;
+			this.render();
 		}));
 
 		this.render();
@@ -148,6 +162,10 @@ export class EmbeddedMcpServerDetail extends Disposable {
 			this.descriptionEl.textContent = '';
 			DOM.clearNode(this.configListEl);
 			DOM.clearNode(this.toolsListEl);
+			// Emptying the list is not enough: the section keeps its heading, which left a bare
+			// "Configuration" floating above "No MCP server selected".
+			this.configEl.style.display = 'none';
+			this.setToolsMessage(undefined);
 			return;
 		}
 
@@ -173,7 +191,10 @@ export class EmbeddedMcpServerDetail extends Disposable {
 		const enablement = runtime?.enablement.read(reader);
 		const kind = enablement !== undefined && isContributionDisabled(enablement)
 			? 'disabled' as const
-			: runtime?.connectionState.read(reader).state;
+			// An installed server with no runtime counterpart is idle, not statusless. The row
+			// says so; without the same fallback the pane went blank for exactly the servers the
+			// conservative runtime matching declines to match.
+			: runtime?.connectionState.read(reader).state ?? McpConnectionState.Kind.Stopped;
 		const presentation = getMcpStatusPresentation(kind);
 
 		this.statusEl.className = presentation ? `mcp-server-status ${presentation.className}` : 'mcp-server-status';
@@ -244,9 +265,15 @@ export class EmbeddedMcpServerDetail extends Disposable {
 
 		if (!runtime || cacheState === McpServerCacheState.Unknown) {
 			// Tools are only known once a server has run at least once. Saying so is more
-			// useful than an empty list, which reads as "this server offers nothing".
+			// useful than an empty list, which reads as "this server offers nothing" -- but
+			// only a server that is actually off should be told to turn on, or the pane asks
+			// the user to flip a switch they can see is already flipped.
+			const enablement = runtime?.enablement.read(reader);
+			const isOff = enablement !== undefined && isContributionDisabled(enablement);
 			this.toolsHeadingEl.textContent = localize('mcpDetailTools', "Tools");
-			this.setToolsMessage(localize('mcpDetailToolsUnknown', "Turn this server on to see the tools it provides."));
+			this.setToolsMessage(isOff
+				? localize('mcpDetailToolsUnknown', "Turn this server on to see the tools it provides.")
+				: localize('mcpDetailToolsNotRun', "Tools are listed once this server has run."));
 			return;
 		}
 

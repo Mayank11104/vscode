@@ -26,7 +26,7 @@ import { ContributionEnablementState, isContributionDisabled, isContributionEnab
 import { EnablementSwitch } from './enablementSwitch.js';
 import { getRuntimeServerMatchKeys, getUniqueMcpMatchKeys, getWorkbenchServerMatchKeys, LocalMcpServerMatcher } from './mcpServerIdentity.js';
 import { McpCommandIds } from '../../../../contrib/mcp/common/mcpCommandIds.js';
-import { autorun, IReader } from '../../../../../base/common/observable.js';
+import { autorun, derived, IObservable, IReader } from '../../../../../base/common/observable.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { InputBox } from '../../../../../base/browser/ui/inputbox/inputBox.js';
@@ -94,6 +94,9 @@ function getScopeOriginLabel(scope: LocalMcpServerScope | undefined): string | u
 		case LocalMcpServerScope.Workspace:
 			return localize('originWorkspace', "Workspace");
 		case LocalMcpServerScope.User:
+		case LocalMcpServerScope.RemoteUser:
+			// A remote-user server is still the user's own choice; where the profile lives is
+			// not a distinction this row is trying to draw, and dropping it left line two blank.
 			return localize('originUser', "User");
 		default:
 			return undefined;
@@ -412,23 +415,29 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			templateData.container.classList.toggle('disabled', localDisabled || activeSessionServer?.enabled === false);
 			const connectionState = element.localServer?.connectionState.read(reader);
 
+			// Status and error are resolved together, from whichever source won. Reading the
+			// error from the local runtime regardless meant a row could show the session's
+			// status beside an unrelated local failure -- or say "Failed" with nothing to read.
 			let status: McpStatusKind | undefined;
 			let statusScope: string | undefined;
+			let errorMessage: string | undefined;
 			if (localDisabled) {
 				status = 'disabled';
 				statusScope = enablement !== undefined && isWorkspaceScopedEnablement(enablement) ? getStatusScopeNote(McpEnablementScope.Workspace) : undefined;
 			} else if (activeSessionServer) {
 				status = activeSessionServer.enabled ? activeSessionServer.status : 'disabled';
 				statusScope = activeSessionServer.enabled ? undefined : getStatusScopeNote(McpEnablementScope.Session);
+				errorMessage = activeSessionServer.enabled ? getAgentHostServerError(activeSessionServer) : undefined;
 			} else {
 				status = connectionState?.state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped);
+				errorMessage = connectionState?.state === McpConnectionState.Kind.Error ? connectionState.message : undefined;
 			}
 
 			this.updateStatus(templateData, element, {
 				status,
 				statusScope,
 				enablement,
-				errorMessage: connectionState?.state === McpConnectionState.Kind.Error ? connectionState.message : undefined,
+				errorMessage,
 				...readServerFacts(element.localServer, reader),
 			});
 		}));
@@ -440,6 +449,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		this.updateStatus(templateData, element, {
 			status: disabled ? 'disabled' : element.server.status,
 			statusScope: disabled ? getStatusScopeNote(McpEnablementScope.Session) : undefined,
+			errorMessage: disabled ? undefined : getAgentHostServerError(element.server),
 		});
 	}
 
@@ -698,11 +708,11 @@ function getMcpEntryLabel(element: IMcpServerItemEntry | IMcpSessionServerItemEn
  * rows also rendered no status; now that every installed row always shows a word, a screen
  * reader would have been the one place the word went missing.
  */
-function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): McpStatusKind | undefined {
+function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, reader?: IReader): McpStatusKind | undefined {
 	if (entry.type === 'session-server-item') {
 		return entry.server.enabled ? entry.server.status : 'disabled';
 	}
-	if (entry.localServer && isContributionDisabled(entry.localServer.enablement.get())) {
+	if (entry.localServer && isContributionDisabled(entry.localServer.enablement.read(reader))) {
 		return 'disabled';
 	}
 	if (entry.activeSessionServer) {
@@ -710,15 +720,15 @@ function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntr
 	}
 	// Gallery rows are the one kind with no status: nothing is installed to have one yet.
 	const isGallery = entry.type === 'server-item' && !entry.server.local;
-	return entry.localServer?.connectionState.get().state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped);
+	return entry.localServer?.connectionState.read(reader).state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped);
 }
 
 /** The layer holding a row off, so "Off" is not ambiguous when it is only spoken. */
-function getMcpStatusScopeNote(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): string | undefined {
+function getMcpStatusScopeNote(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, reader?: IReader): string | undefined {
 	if (entry.type === 'session-server-item') {
 		return entry.server.enabled ? undefined : getStatusScopeNote(McpEnablementScope.Session);
 	}
-	const enablement = entry.localServer?.enablement.get();
+	const enablement = entry.localServer?.enablement.read(reader);
 	if (enablement !== undefined && isContributionDisabled(enablement)) {
 		return isWorkspaceScopedEnablement(enablement) ? getStatusScopeNote(McpEnablementScope.Workspace) : undefined;
 	}
@@ -728,19 +738,30 @@ function getMcpStatusScopeNote(entry: IMcpServerItemEntry | IMcpSessionServerIte
 	return undefined;
 }
 
-export function getMcpEntryAriaLabel(element: IMcpListEntry): string {
+/**
+ * The accessible name for a row, as an observable.
+ *
+ * It has to be observable because a row's status changes without the list being spliced: the
+ * visual word is driven by an autorun over `connectionState`, and nothing re-renders the row
+ * around it. A plain string would be computed once and then quietly describe the past.
+ */
+export function observeMcpEntryAriaLabel(element: IMcpListEntry): IObservable<string> {
+	return derived(reader => getMcpEntryAriaLabel(element, reader));
+}
+
+export function getMcpEntryAriaLabel(element: IMcpListEntry, reader?: IReader): string {
 	if (element.type === 'group-header') {
 		return localize('mcpGroupAriaLabel', "{0}, {1} items, {2}", element.label, element.count, element.collapsed ? localize('collapsed', "collapsed") : localize('expanded', "expanded"));
 	}
 	const label = getMcpEntryLabel(element);
-	const status = getMcpStatusPresentation(getMcpStatusKind(element));
+	const status = getMcpStatusPresentation(getMcpStatusKind(element, reader));
 	if (!status) {
 		return label;
 	}
 	// "Off" alone leaves the user with no way to find where it was turned off, which is the
 	// one thing they need in order to turn it back on. Composed by the same helper the row
 	// uses, so what is spoken and what is shown cannot drift apart.
-	const statusText = formatMcpStatusWithScope(status.label, getMcpStatusScopeNote(element));
+	const statusText = formatMcpStatusWithScope(status.label, getMcpStatusScopeNote(element, reader));
 	return localize('mcpServerAriaLabelWithStatus', "{0}, {1}", label, statusText);
 }
 
@@ -812,6 +833,15 @@ function matchesActiveSessionServerQuery(server: AgentHostMcpServer, query: stri
 		return true;
 	}
 	return server.name.toLowerCase().includes(query);
+}
+
+/**
+ * Why an agent-host server failed. Session rows previously said "Failed" and stopped there,
+ * while local rows explained themselves inline -- the same word meaning less on half the list.
+ */
+function getAgentHostServerError(server: AgentHostMcpServer): string | undefined {
+	const state = server.state;
+	return state?.kind === McpServerStatus.Error ? state.error?.message : undefined;
 }
 
 function getActiveSessionServerLifecycleAction(server: AgentHostMcpServer): Action | undefined {
@@ -996,8 +1026,15 @@ export function getEnablementTarget(element: IMcpServerItemEntry | IMcpSessionSe
 	}
 
 	const id = localServer.definition.id;
+	// Name the layer the switch will actually rewrite. When the durable choice already says
+	// on and only the session is holding the server off, flipping the switch touches nothing
+	// but the session -- so promising to "turn on {name}" everywhere would overstate its reach,
+	// and would disagree with the row's own "Off (Session)".
+	const sessionIsTheOnlyBlocker = isContributionEnabled(enablement) && activeSessionServer?.enabled === false;
 	return {
-		scope: isWorkspaceScopedEnablement(enablement) ? McpEnablementScope.Workspace : McpEnablementScope.Global,
+		scope: sessionIsTheOnlyBlocker
+			? McpEnablementScope.Session
+			: isWorkspaceScopedEnablement(enablement) ? McpEnablementScope.Workspace : McpEnablementScope.Global,
 		// A row can be held off by the durable choice, the session choice, or both. The switch
 		// reflects the union, and flipping it aligns every layer that disagrees -- a switch that
 		// leaves the server still visibly off after being turned on is a broken switch.
@@ -1006,9 +1043,11 @@ export function getEnablementTarget(element: IMcpServerItemEntry | IMcpSessionSe
 			if (isContributionEnabled(enablement) !== enabled) {
 				mcpService.enablementModel.setEnabled(id, toggleContributionEnablement(enablement));
 			}
-			if (activeSessionServer && activeSessionServer.enabled !== enabled) {
-				activeSessionServer.setEnabled(enabled);
-			}
+			// Dispatched unconditionally: `enabled` here is a snapshot taken when the list was
+			// built, and the durable write above notifies synchronously, which can rebuild the
+			// list underneath this closure. Guarding on the stale value could drop the session
+			// write entirely; re-asserting a value the session already holds is harmless.
+			activeSessionServer?.setEnabled(enabled);
 		},
 	};
 }
@@ -1326,7 +1365,7 @@ export class McpListWidget extends Disposable {
 				horizontalScrolling: false,
 				accessibilityProvider: {
 					getAriaLabel: (element: IMcpListEntry) => {
-						return getMcpEntryAriaLabel(element);
+						return observeMcpEntryAriaLabel(element);
 					},
 					getWidgetAriaLabel() {
 						return localize('mcpServersListAriaLabel', "MCP Servers");

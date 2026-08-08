@@ -9,6 +9,7 @@ import { Button, unthemedButtonStyles } from '../../../../../../base/browser/ui/
 import { URI } from '../../../../../../base/common/uri.js';
 import { IAction, Separator } from '../../../../../../base/common/actions.js';
 import { DisposableStore, isDisposable } from '../../../../../../base/common/lifecycle.js';
+import { constObservable } from '../../../../../../base/common/observable.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
 import { McpServerStatus } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import { ContributionEnablementState } from '../../../common/enablement.js';
@@ -292,7 +293,7 @@ suite('mcpListWidget', () => {
 		});
 
 		test('a row held off by the workspace says which layer turned it off', () => {
-			const held = entry({ localServer: { enablement: { get: () => ContributionEnablementState.DisabledWorkspace } } });
+			const held = entry({ localServer: { enablement: constObservable(ContributionEnablementState.DisabledWorkspace) } });
 			assert.strictEqual(getMcpEntryAriaLabel(held), 'Redis, Off (Workspace)');
 		});
 	});
