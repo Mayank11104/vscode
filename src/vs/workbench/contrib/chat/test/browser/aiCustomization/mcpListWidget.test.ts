@@ -23,8 +23,10 @@ import {
 	getAgentHostMcpServerEnablementActions,
 	getLocalMcpServerEnablementActions,
 	getMcpServerOutputHandler,
+	getMcpEntryAriaLabel,
 	getSessionEnablementAction,
 	getEnablementTarget,
+	countSessionOnlyMcpServers,
 	McpEnablementScope,
 	registerMcpInlineButtonAction,
 } from '../../../browser/aiCustomization/mcpListWidget.js';
@@ -266,6 +268,55 @@ suite('mcpListWidget', () => {
 				shownChannels: [],
 				localOutputCount: 1,
 			});
+		});
+	});
+
+	suite('getMcpEntryAriaLabel', () => {
+		// The row always renders a status word; these guard the accessible name against drifting
+		// away from it, which is invisible until someone is relying on a screen reader.
+		function entry(overrides: object) {
+			return { type: 'server-item', server: { label: 'Redis', local: {} }, ...overrides } as unknown as Parameters<typeof getMcpEntryAriaLabel>[0];
+		}
+
+		test('an installed server that has never connected still reads as Stopped', () => {
+			assert.strictEqual(getMcpEntryAriaLabel(entry({})), 'Redis, Idle');
+		});
+
+		test('a built-in row carries its status word too', () => {
+			const builtin = { type: 'builtin-item', label: 'GitHub Copilot' } as unknown as Parameters<typeof getMcpEntryAriaLabel>[0];
+			assert.strictEqual(getMcpEntryAriaLabel(builtin), 'GitHub Copilot, Idle');
+		});
+
+		test('a gallery row has no status, because nothing is installed to have one', () => {
+			assert.strictEqual(getMcpEntryAriaLabel(entry({ server: { label: 'Redis' } })), 'Redis');
+		});
+
+		test('a row held off by the workspace says which layer turned it off', () => {
+			const held = entry({ localServer: { enablement: { get: () => ContributionEnablementState.DisabledWorkspace } } });
+			assert.strictEqual(getMcpEntryAriaLabel(held), 'Redis, Off (Workspace)');
+		});
+	});
+
+	suite('countSessionOnlyMcpServers', () => {
+		const local = (id: string, name: string) => ({ id, name, label: name }) as unknown as Parameters<typeof countSessionOnlyMcpServers>[1][number];
+
+		test('a session server the user also installed is not counted twice', () => {
+			const session = createAgentHostServer({ id: 's1', name: 'playwright' });
+			assert.strictEqual(countSessionOnlyMcpServers([session], [local('playwright', 'playwright')], []), 0);
+		});
+
+		test('a server only the session knows about is counted', () => {
+			const session = createAgentHostServer({ id: 's1', name: 'node_repl' });
+			assert.strictEqual(countSessionOnlyMcpServers([session], [local('playwright', 'playwright')], []), 1);
+		});
+
+		test('the count does not depend on what a search would have hidden', () => {
+			// The bug this guards: claiming against a query-filtered list left the session twin
+			// unclaimed, so the badge grew as the query narrowed.
+			const session = createAgentHostServer({ id: 's1', name: 'playwright' });
+			const installed = [local('playwright', 'playwright'), local('redis', 'redis')];
+			assert.strictEqual(countSessionOnlyMcpServers([session], installed, []), 0);
+			assert.strictEqual(countSessionOnlyMcpServers([session], [], []), 1);
 		});
 	});
 

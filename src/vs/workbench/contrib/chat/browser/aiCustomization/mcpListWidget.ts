@@ -231,7 +231,17 @@ interface IMcpServerItemTemplateData {
 	/** Status word + dot, rendered next to the name so state reads as part of the server's identity. */
 	readonly status: HTMLElement;
 	readonly description: HTMLElement;
+	/**
+	 * Holds everything in the trailing slot that is rebuilt on every status change: the tool
+	 * count and the inline buttons. The switch deliberately lives outside it -- see below.
+	 */
 	readonly actions: HTMLElement;
+	/**
+	 * Built once and reused for the life of the template. Rebuilding it per status change would
+	 * remove the element a keyboard user is standing on: toggling notifies synchronously, which
+	 * re-runs the status autorun, which would tear the focused button out of the document.
+	 */
+	readonly enablementSwitch: EnablementSwitch;
 	readonly elementDisposables: DisposableStore;
 	readonly actionDisposables: DisposableStore;
 	/** Static, per-element facts that the dynamic status update needs to re-render line two. */
@@ -299,7 +309,9 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 
 		const description = DOM.append(details, $('.mcp-server-description'));
 
-		const actions = DOM.append(container, $('.mcp-server-actions'));
+		const actionsSlot = DOM.append(container, $('.mcp-server-actions'));
+		const actions = DOM.append(actionsSlot, $('.mcp-server-actions-transient'));
+		const enablementSwitch = new EnablementSwitch(actionsSlot);
 
 		return {
 			container,
@@ -308,6 +320,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			status,
 			description,
 			actions,
+			enablementSwitch,
 			elementDisposables: new DisposableStore(),
 			actionDisposables: new DisposableStore(),
 			context: {},
@@ -320,7 +333,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 
 		if (element.type === 'builtin-item') {
 			templateData.container.classList.add('builtin');
-			templateData.container.classList.toggle('has-detail', false);
+			templateData.container.classList.remove('has-detail');
 			templateData.name.textContent = formatDisplayName(element.label);
 			templateData.context = {
 				origin: element.origin,
@@ -347,7 +360,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 
 		if (element.type === 'session-server-item') {
 			templateData.container.classList.remove('builtin');
-			templateData.container.classList.toggle('has-detail', false);
+			templateData.container.classList.remove('has-detail');
 			templateData.name.textContent = formatDisplayName(element.server.name);
 			templateData.context = { origin: localize('originSession', "Session") };
 			this.updateActiveSessionStatus(templateData, element);
@@ -357,10 +370,11 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		templateData.container.classList.remove('builtin');
 		templateData.name.textContent = formatDisplayName(element.server.label);
 		const description = element.server.description?.trim();
-		// Marketplace (gallery) entries are always clickable so users can install/inspect them.
-		// Only gallery rows are clickable now, so only they get the affordance that says so.
+		// Every server row opens a detail page, so every server row gets the affordance that
+		// says so. Leaving this on gallery rows only made installed rows -- the common case --
+		// render a plain arrow over something that was in fact clickable.
 		const isGallery = !element.server.local;
-		templateData.container.classList.toggle('has-detail', isGallery);
+		templateData.container.classList.add('has-detail');
 		templateData.context = {
 			origin: isGallery ? undefined : getScopeOriginLabel(element.server.local?.scope),
 			description: description ? truncateToFirstLine(description) : undefined,
@@ -443,9 +457,8 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		if (presentation) {
 			templateData.status.classList.add(presentation.className);
 			DOM.append(templateData.status, $('.mcp-server-status-dot'));
-			DOM.append(templateData.status, $('.mcp-server-status-label')).textContent = rowState.statusScope
-				? localize('mcpStatusWithScope', "{0} ({1})", presentation.label, rowState.statusScope)
-				: presentation.label;
+			DOM.append(templateData.status, $('.mcp-server-status-label')).textContent =
+				formatMcpStatusWithScope(presentation.label, rowState.statusScope);
 		}
 
 		this.renderMetaLine(templateData, rowState);
@@ -528,12 +541,13 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 	 * to guess at. Gallery rows get none — there is nothing to turn on until the server exists.
 	 */
 	private renderEnablementSwitch(templateData: IMcpServerItemTemplateData, element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, rowState: IMcpRowState, label: string): void {
+		const toggle = templateData.enablementSwitch;
 		const target = getEnablementTarget(element, this.mcpService, rowState.enablement);
+		toggle.setVisible(!!target);
 		if (!target) {
 			return;
 		}
 
-		const toggle = templateData.actionDisposables.add(new EnablementSwitch(templateData.actions));
 		const checked = target.isEnabled();
 		toggle.update(checked, getEnablementSwitchLabel(label, checked, target.scope));
 		templateData.actionDisposables.add(toggle.onDidToggle(() => target.setEnabled(!target.isEnabled())));
@@ -594,6 +608,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 	disposeTemplate(templateData: IMcpServerItemTemplateData): void {
 		templateData.elementDisposables.dispose();
 		templateData.actionDisposables.dispose();
+		templateData.enablementSwitch.dispose();
 	}
 }
 
@@ -675,7 +690,15 @@ function getMcpEntryLabel(element: IMcpServerItemEntry | IMcpSessionServerItemEn
 			: element.server.label;
 }
 
-function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, isSessionsWindow: boolean): McpStatusKind | undefined {
+/**
+ * Resolves the status a row is *showing*, for the accessible name.
+ *
+ * This must mirror `updateKnownServerStatus` exactly. It previously returned nothing for
+ * built-in rows and for every row in the Agents window, which was harmless only while those
+ * rows also rendered no status; now that every installed row always shows a word, a screen
+ * reader would have been the one place the word went missing.
+ */
+function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): McpStatusKind | undefined {
 	if (entry.type === 'session-server-item') {
 		return entry.server.enabled ? entry.server.status : 'disabled';
 	}
@@ -685,21 +708,68 @@ function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntr
 	if (entry.activeSessionServer) {
 		return entry.activeSessionServer.enabled ? entry.activeSessionServer.status : 'disabled';
 	}
-	if (entry.type === 'server-item' && !isSessionsWindow) {
-		return entry.localServer?.connectionState.get().state;
+	// Gallery rows are the one kind with no status: nothing is installed to have one yet.
+	const isGallery = entry.type === 'server-item' && !entry.server.local;
+	return entry.localServer?.connectionState.get().state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped);
+}
+
+/** The layer holding a row off, so "Off" is not ambiguous when it is only spoken. */
+function getMcpStatusScopeNote(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): string | undefined {
+	if (entry.type === 'session-server-item') {
+		return entry.server.enabled ? undefined : getStatusScopeNote(McpEnablementScope.Session);
+	}
+	const enablement = entry.localServer?.enablement.get();
+	if (enablement !== undefined && isContributionDisabled(enablement)) {
+		return isWorkspaceScopedEnablement(enablement) ? getStatusScopeNote(McpEnablementScope.Workspace) : undefined;
+	}
+	if (entry.activeSessionServer && !entry.activeSessionServer.enabled) {
+		return getStatusScopeNote(McpEnablementScope.Session);
 	}
 	return undefined;
 }
 
-function getMcpEntryAriaLabel(element: IMcpListEntry, isSessionsWindow: boolean): string {
+export function getMcpEntryAriaLabel(element: IMcpListEntry): string {
 	if (element.type === 'group-header') {
 		return localize('mcpGroupAriaLabel', "{0}, {1} items, {2}", element.label, element.count, element.collapsed ? localize('collapsed', "collapsed") : localize('expanded', "expanded"));
 	}
 	const label = getMcpEntryLabel(element);
-	const status = getMcpStatusPresentation(getMcpStatusKind(element, isSessionsWindow));
-	return status
-		? localize('mcpServerAriaLabelWithStatus', "{0}, {1}", label, status.label)
-		: label;
+	const status = getMcpStatusPresentation(getMcpStatusKind(element));
+	if (!status) {
+		return label;
+	}
+	// "Off" alone leaves the user with no way to find where it was turned off, which is the
+	// one thing they need in order to turn it back on. Composed by the same helper the row
+	// uses, so what is spoken and what is shown cannot drift apart.
+	const statusText = formatMcpStatusWithScope(status.label, getMcpStatusScopeNote(element));
+	return localize('mcpServerAriaLabelWithStatus', "{0}, {1}", label, statusText);
+}
+
+/** Joins the status word to the layer holding it, e.g. "Off (Workspace)". */
+function formatMcpStatusWithScope(label: string, scope: string | undefined): string {
+	return scope ? localize('mcpStatusWithScope', "{0} ({1})", label, scope) : label;
+}
+
+/**
+ * Counts session servers that no installed or runtime server already accounts for.
+ *
+ * This exists so the sidebar badge cannot be moved by the search box. The matcher used to build
+ * the list is consumed against the *filtered* server lists, so the narrower the query the fewer
+ * session servers it claims -- reading its leftovers made the badge grow while typing. This
+ * claims against the unfiltered lists instead, so the answer is a property of what the user has.
+ */
+export function countSessionOnlyMcpServers(
+	sessionServers: readonly AgentHostMcpServer[],
+	localServers: readonly IWorkbenchMcpServer[],
+	runtimeServers: readonly IMcpServer[],
+): number {
+	const matcher = new ActiveSessionMcpServerMatcher(sessionServers);
+	for (const server of localServers) {
+		matcher.take(getWorkbenchServerMatchKeys(server));
+	}
+	for (const server of runtimeServers) {
+		matcher.take(getRuntimeServerMatchKeys(server));
+	}
+	return matcher.unmatched('').length;
 }
 
 class ActiveSessionMcpServerMatcher {
@@ -1256,7 +1326,7 @@ export class McpListWidget extends Disposable {
 				horizontalScrolling: false,
 				accessibilityProvider: {
 					getAriaLabel: (element: IMcpListEntry) => {
-						return getMcpEntryAriaLabel(element, this.workspaceService.isSessionsWindow);
+						return getMcpEntryAriaLabel(element);
 					},
 					getWidgetAriaLabel() {
 						return localize('mcpServersListAriaLabel', "MCP Servers");
@@ -1472,9 +1542,8 @@ export class McpListWidget extends Disposable {
 		// the *unfiltered* local list: a local server hidden by the query must still suppress its
 		// runtime twin, otherwise searching makes duplicates appear.
 		const localIds = new Set(this.mcpWorkbenchService.local.map(s => s.id));
-		const builtinServers = this.mcpService.servers.get()
-			.filter(s => !localIds.has(s.definition.id))
-			.filter(s => matchesQuery(s.definition.label));
+		const allBuiltinServers = this.mcpService.servers.get().filter(s => !localIds.has(s.definition.id));
+		const builtinServers = allBuiltinServers.filter(s => matchesQuery(s.definition.label));
 
 		// One axis: did the user configure this, or did it arrive with something they installed?
 		// Workspace vs User, and Plugin vs Extension vs Built-in, are now shown per row instead.
@@ -1566,9 +1635,17 @@ export class McpListWidget extends Disposable {
 		// The sidebar badge counts what the user *has*, not what the current search matched.
 		// Deriving it from the filtered arrays made typing in the search box silently rewrite
 		// the tab's badge, which reads as servers disappearing.
+		//
+		// activeSessionMatcher cannot answer this: take() consumed it against the *filtered*
+		// lists, so the narrower the query, the fewer session servers were claimed and the more
+		// unmatched() returns -- the badge would grow while searching. Claim against the
+		// unfiltered lists in a throwaway matcher to find the servers only the session knows.
 		this.totalServerCount = this.mcpWorkbenchService.local.length
-			+ this.mcpService.servers.get().filter(s => !localIds.has(s.definition.id)).length
-			+ activeSessionMatcher.unmatched('').length;
+			+ allBuiltinServers.length
+			+ countSessionOnlyMcpServers(
+				this.agentHostCustomizationService.getMcpServers(activeSessionResource),
+				this.mcpWorkbenchService.local,
+				allBuiltinServers);
 		this._onDidChangeItemCount.fire(this.itemCount);
 	}
 

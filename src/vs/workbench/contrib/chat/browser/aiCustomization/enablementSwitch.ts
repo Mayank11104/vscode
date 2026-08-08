@@ -38,6 +38,10 @@ export class EnablementSwitch extends Disposable {
 		this.element = DOM.append(parent, $('button.ai-customization-switch'));
 		this.element.setAttribute('role', 'switch');
 		this.element.setAttribute('type', 'button');
+		// A bare <button> is focusable, but List.onTab finds the control inside a row with
+		// querySelector('[tabIndex]'), which only matches the content attribute. Assigning the
+		// property reflects it, so Tab from the row reaches the switch.
+		this.element.tabIndex = 0;
 		DOM.append(this.element, $('span.ai-customization-switch-knob'));
 
 		this._register(DOM.addDisposableListener(this.element, DOM.EventType.CLICK, e => {
@@ -56,6 +60,11 @@ export class EnablementSwitch extends Disposable {
 				this._onDidToggle.fire();
 			}
 		}));
+	}
+
+	/** Rows share one template, so the switch is hidden rather than rebuilt when a row has none. */
+	setVisible(visible: boolean): void {
+		this.element.style.display = visible ? '' : 'none';
 	}
 
 	get checked(): boolean {

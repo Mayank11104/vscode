@@ -1656,7 +1656,9 @@ pane is too narrow for a label column to be worth the space it takes. */
 	container: mcp-server-row / inline-size;
 }
 
-.mcp-server-item:not(.has-detail):not(.builtin) {
+/* has-detail means "clicking this row goes somewhere". Built-in and session rows are inert,
+so they must not offer a pointer; every installed and gallery server row does. */
+.mcp-server-item:not(.has-detail) {
 	cursor: default;
 }
 
@@ -1759,6 +1761,19 @@ the part that actually needs attention. */
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
+}
+
+/* The tool count and inline buttons are rebuilt on every status change; the switch beside them
+is not, so that toggling it does not delete the element the user is focused on. This slot keeps
+the two apart while laying out identically to a single flat row of actions. */
+.mcp-server-item .mcp-server-actions-transient {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+}
+
+.mcp-server-item .mcp-server-actions-transient:empty {
+	display: none;
 }
 
 .mcp-server-item .mcp-server-tools {
