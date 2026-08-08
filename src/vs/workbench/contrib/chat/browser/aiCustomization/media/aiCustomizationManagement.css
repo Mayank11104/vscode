@@ -1734,6 +1734,58 @@ the part that actually needs attention. */
 	border-radius: var(--vscode-cornerRadius-small);
 }
 
+/* On/off switch: the one control every installed row carries, at the trailing edge.
+	Sized at the control tier so it reads as a peer of the inline buttons beside it.
+	Uses button rather than inputOption colours: inputOption.activeBackground is fully
+	transparent in both high-contrast themes, which would leave "on" indistinguishable
+	from "off" exactly where that distinction matters most. */
+.ai-customization-switch {
+	flex-shrink: 0;
+	position: relative;
+	width: var(--vscode-spacing-size280);
+	height: var(--vscode-spacing-size160);
+	padding: 0;
+	border: 1px solid var(--vscode-checkbox-border);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-checkbox-background);
+	cursor: pointer;
+	transition: background-color 100ms ease-out;
+}
+
+.ai-customization-switch-knob {
+	position: absolute;
+	top: 50%;
+	left: var(--vscode-spacing-size20);
+	width: var(--vscode-spacing-size100);
+	height: var(--vscode-spacing-size100);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-checkbox-foreground);
+	transform: translateY(-50%);
+	transition: left 100ms ease-out, background-color 100ms ease-out;
+}
+
+.ai-customization-switch.checked {
+	background-color: var(--vscode-button-background);
+	/* High-contrast themes flatten the fill, so on/off would differ by knob position alone.
+		contrastActiveBorder is only defined there, so this is inert in the other themes. */
+	border-color: var(--vscode-contrastActiveBorder, var(--vscode-checkbox-border));
+}
+
+.ai-customization-switch.checked .ai-customization-switch-knob {
+	left: calc(100% - var(--vscode-spacing-size100) - var(--vscode-spacing-size20));
+	background-color: var(--vscode-button-foreground);
+}
+
+.ai-customization-switch:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+/* The row dims when a server is off, but its switch must stay readable -- it is the way back. */
+.mcp-server-item.disabled .ai-customization-switch {
+	opacity: 1;
+}
+
 /* Status: a word, plus a colour dot for redundancy. Never colour alone. */
 .mcp-server-item .mcp-server-status {
 	flex: 0 0 auto;

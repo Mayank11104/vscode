@@ -24,6 +24,8 @@ import {
 	getLocalMcpServerEnablementActions,
 	getMcpServerOutputHandler,
 	getSessionEnablementAction,
+	getEnablementTarget,
+	McpEnablementScope,
 	registerMcpInlineButtonAction,
 } from '../../../browser/aiCustomization/mcpListWidget.js';
 
@@ -263,6 +265,83 @@ suite('mcpListWidget', () => {
 			}, {
 				shownChannels: [],
 				localOutputCount: 1,
+			});
+		});
+	});
+
+	suite('getEnablementTarget', () => {
+		function createLocalEntry(overrides: { enabled?: boolean; activeSessionEnabled?: boolean } = {}) {
+			const sessionCalls: boolean[] = [];
+			const entry = {
+				type: 'server-item',
+				localServer: { definition: { id: 'mcp-redis' } },
+				activeSessionServer: overrides.activeSessionEnabled === undefined
+					? undefined
+					: createAgentHostServer({
+						enabled: overrides.activeSessionEnabled,
+						setEnabled: (enabled: boolean) => { sessionCalls.push(enabled); },
+					}),
+			} as unknown as Parameters<typeof getEnablementTarget>[0];
+			return { entry, sessionCalls };
+		}
+
+		test('a gallery row has no switch, because there is nothing to turn on yet', () => {
+			const entry = { type: 'server-item' } as unknown as Parameters<typeof getEnablementTarget>[0];
+			assert.strictEqual(getEnablementTarget(entry, createMcpService(ContributionEnablementState.EnabledProfile).service, undefined), undefined);
+		});
+
+		test('a workspace-scoped choice is named as such, and toggling stays in that layer', () => {
+			const { entry } = createLocalEntry();
+			const { service, calls } = createMcpService(ContributionEnablementState.DisabledWorkspace);
+			const target = getEnablementTarget(entry, service, ContributionEnablementState.DisabledWorkspace);
+			target?.setEnabled(true);
+
+			assert.deepStrictEqual({ scope: target?.scope, isEnabled: target?.isEnabled(), calls }, {
+				scope: McpEnablementScope.Workspace,
+				isEnabled: false,
+				calls: [['mcp-redis', ContributionEnablementState.EnabledWorkspace]],
+			});
+		});
+
+		test('turning on a row held off by both layers aligns both, so it cannot stay visibly off', () => {
+			const { entry, sessionCalls } = createLocalEntry({ activeSessionEnabled: false });
+			const { service, calls } = createMcpService(ContributionEnablementState.DisabledProfile);
+			const target = getEnablementTarget(entry, service, ContributionEnablementState.DisabledProfile);
+			target?.setEnabled(true);
+
+			assert.deepStrictEqual({ scope: target?.scope, calls, sessionCalls }, {
+				scope: McpEnablementScope.Global,
+				calls: [['mcp-redis', ContributionEnablementState.EnabledProfile]],
+				sessionCalls: [true],
+			});
+		});
+
+		test('a session-off row reads as off and turning it on touches only the session', () => {
+			const { entry, sessionCalls } = createLocalEntry({ activeSessionEnabled: false });
+			const { service, calls } = createMcpService(ContributionEnablementState.EnabledProfile);
+			const target = getEnablementTarget(entry, service, ContributionEnablementState.EnabledProfile);
+			const wasEnabled = target?.isEnabled();
+			target?.setEnabled(true);
+
+			assert.deepStrictEqual({ wasEnabled, calls, sessionCalls }, {
+				wasEnabled: false,
+				calls: [],
+				sessionCalls: [true],
+			});
+		});
+
+		test('a session-only row toggles the session', () => {
+			const sessionCalls: boolean[] = [];
+			const entry = {
+				type: 'session-server-item',
+				server: createAgentHostServer({ enabled: true, setEnabled: (enabled: boolean) => { sessionCalls.push(enabled); } }),
+			} as unknown as Parameters<typeof getEnablementTarget>[0];
+			const target = getEnablementTarget(entry, createMcpService(ContributionEnablementState.EnabledProfile).service, undefined);
+			target?.setEnabled(false);
+
+			assert.deepStrictEqual({ scope: target?.scope, calls: sessionCalls }, {
+				scope: McpEnablementScope.Session,
+				calls: [false],
 			});
 		});
 	});

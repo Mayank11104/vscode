@@ -567,11 +567,43 @@ function makeRuntimeServerFacts(toolCount: number, cacheState: McpServerCacheSta
 	};
 }
 
+/**
+ * The list's on/off switch writes through this model; it reads from each server's own enablement
+ * observable, which in production is derived from the very same model.
+ */
+const mcpEnablementModel = {
+	readEnabled: () => ContributionEnablementState.EnabledProfile,
+	setEnabled: () => { },
+	remove: () => { },
+};
+
+/**
+ * In production every installed MCP server has a runtime counterpart, which is what supplies its
+ * enablement, connection state, and tool counts. Derive one per installed server so the rendered
+ * list matches production -- notably that every installed row carries an on/off switch -- and
+ * override only the few whose interesting states we want in the baselines.
+ */
+const mcpRuntimeOverrides: Record<string, Partial<ReturnType<typeof makeRuntimeServer>>> = {
+	'mcp-postgres': { connectionState: constObservable({ state: McpConnectionState.Kind.Error, message: 'connect ECONNREFUSED 127.0.0.1:5432' }), ...makeRuntimeServerFacts(8, McpServerCacheState.Cached, McpServerTransportType.Stdio) },
+	'mcp-web-search': { enablement: constObservable(ContributionEnablementState.DisabledWorkspace) },
+	'mcp-filesystem': { ...makeRuntimeServerFacts(11, McpServerCacheState.Cached, McpServerTransportType.Stdio) },
+	'mcp-graphql': { enablement: constObservable(ContributionEnablementState.DisabledProfile) },
+};
+
+function makeRuntimeServer(server: IWorkbenchMcpServer) {
+	return {
+		definition: { id: server.id, label: server.label },
+		collection: { id: server.local?.scope === LocalMcpServerScope.Workspace ? 'workspace-mcp' : 'user-mcp', label: 'MCP' },
+		enablement: constObservable(ContributionEnablementState.EnabledProfile),
+		connectionState: constObservable({ state: McpConnectionState.Kind.Stopped }),
+		showOutput() { },
+		...makeRuntimeServerFacts(6, McpServerCacheState.Cached, McpServerTransportType.Stdio),
+	};
+}
+
 const mcpRuntimeServers = [
 	{ definition: { id: 'github-copilot-mcp', label: 'GitHub Copilot' }, collection: { id: 'ext.github.copilot/mcp', label: 'ext.github.copilot/mcp' }, enablement: constObservable(ContributionEnablementState.EnabledProfile), connectionState: constObservable({ state: McpConnectionState.Kind.Starting }), showOutput() { }, ...makeRuntimeServerFacts(14, McpServerCacheState.Cached, McpServerTransportType.HTTP) },
-	{ definition: { id: 'mcp-postgres', label: 'PostgreSQL' }, collection: { id: 'workspace-mcp', label: 'Workspace MCP' }, enablement: constObservable(ContributionEnablementState.EnabledProfile), connectionState: constObservable({ state: McpConnectionState.Kind.Error, message: 'connect ECONNREFUSED 127.0.0.1:5432' }), showOutput() { }, ...makeRuntimeServerFacts(8, McpServerCacheState.Cached, McpServerTransportType.Stdio) },
-	{ definition: { id: 'mcp-web-search', label: 'Web Search' }, collection: { id: 'user-mcp', label: 'User MCP' }, enablement: constObservable(ContributionEnablementState.DisabledProfile), connectionState: constObservable({ state: McpConnectionState.Kind.Stopped }), showOutput() { }, ...makeRuntimeServerFacts(3, McpServerCacheState.Cached, McpServerTransportType.HTTP) },
-	{ definition: { id: 'mcp-filesystem', label: 'Filesystem' }, collection: { id: 'user-mcp', label: 'User MCP' }, enablement: constObservable(ContributionEnablementState.EnabledProfile), connectionState: constObservable({ state: McpConnectionState.Kind.Stopped }), showOutput() { }, ...makeRuntimeServerFacts(11, McpServerCacheState.Cached, McpServerTransportType.Stdio) },
+	...[...mcpWorkspaceServers, ...mcpUserServers].map(server => ({ ...makeRuntimeServer(server), ...mcpRuntimeOverrides[server.id] })),
 ];
 
 const activeSessionMcpServers: FixtureAgentHostMcpServer[] = [
@@ -902,6 +934,7 @@ async function renderEditor(ctx: ComponentFixtureContext, options: IRenderEditor
 			}());
 			reg.defineInstance(IMcpService, new class extends mock<IMcpService>() {
 				override readonly servers = constObservable(mcpRuntimeServers as never[]);
+				override readonly enablementModel = mcpEnablementModel;
 			}());
 			reg.defineInstance(IMcpRegistry, new class extends mock<IMcpRegistry>() {
 				override readonly collections = constObservable([]);
@@ -1035,6 +1068,7 @@ async function renderMcpBrowseMode(ctx: ComponentFixtureContext): Promise<void> 
 			}());
 			reg.defineInstance(IMcpService, new class extends mock<IMcpService>() {
 				override readonly servers = constObservable([] as never[]);
+				override readonly enablementModel = mcpEnablementModel;
 			}());
 			reg.defineInstance(IMcpRegistry, new class extends mock<IMcpRegistry>() {
 				override readonly collections = constObservable([]);
@@ -1258,6 +1292,7 @@ function renderMcpDisabled(ctx: ComponentFixtureContext, byPolicy: boolean): voi
 			}());
 			reg.defineInstance(IMcpService, new class extends mock<IMcpService>() {
 				override readonly servers = constObservable([] as never[]);
+				override readonly enablementModel = mcpEnablementModel;
 			}());
 			reg.defineInstance(IMcpRegistry, new class extends mock<IMcpRegistry>() {
 				override readonly collections = constObservable([]);
