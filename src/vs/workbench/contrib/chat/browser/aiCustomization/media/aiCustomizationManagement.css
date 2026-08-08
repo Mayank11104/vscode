@@ -1314,18 +1314,11 @@
 	min-width: 0;
 }
 
-.ai-customization-management-editor .ai-customization-embedded-detail .embedded-detail-icon {
-	flex: 0 0 auto;
-	width: 32px;
-	height: 32px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	color: var(--vscode-foreground);
-}
-
-.ai-customization-management-editor .ai-customization-embedded-detail .embedded-detail-icon.codicon::before {
-	font-size: 28px;
+/* An empty slot is still a flex item, so the header's gap would indent the title past the
+left edge of everything below it. Take it out of the flow entirely when there is nothing
+in it. */
+.ai-customization-management-editor .ai-customization-embedded-detail .embedded-detail-leading-slot:empty {
+	display: none;
 }
 
 .ai-customization-management-editor .ai-customization-embedded-detail .embedded-detail-header-text {
@@ -1362,7 +1355,6 @@
 	line-height: 1.4;
 	white-space: pre-wrap;
 	word-break: break-word;
-	padding-inline-start: 32px;
 }
 
 .ai-customization-management-editor .ai-customization-embedded-detail .embedded-detail-empty {
@@ -1376,7 +1368,6 @@
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	padding-inline-start: 32px;
 	min-width: 0;
 }
 
@@ -1424,6 +1415,69 @@
 	-webkit-line-clamp: 2;
 	line-clamp: 2;
 	overflow: hidden;
+}
+
+/* MCP server detail
+-------------------------------------------------------------------------- */
+
+/* MCP tool descriptions are the server's own documentation and are the reason the pane
+exists, so they are shown in full rather than clamped like the gallery's previews. */
+.ai-customization-management-editor .embedded-mcp-detail .embedded-detail-tool-description {
+	display: block;
+	overflow: visible;
+}
+
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-subtitle {
+	gap: var(--vscode-spacing-size40);
+}
+
+/* The status word carries the list row's own size. Here it is one word in a sentence of
+subtitle text, so it should read at the subtitle's size instead. */
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-subtitle .mcp-server-status {
+	font-size: inherit;
+}
+
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-subtitle.has-separator .mcp-detail-scope-text::before {
+	content: '\00b7';
+	margin-inline-end: var(--vscode-spacing-size40);
+}
+
+.ai-customization-management-editor .embedded-mcp-detail .embedded-detail-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+}
+
+/* Two columns so labels form a scannable edge, collapsing to stacked rows when the
+pane is too narrow for a label column to be worth the space it takes. */
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-facts {
+	display: grid;
+	grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+	gap: 4px 16px;
+	margin: 0;
+	min-width: 0;
+}
+
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-fact-label {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-agents-fontSize-body2);
+	white-space: nowrap;
+}
+
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-fact-value {
+	margin: 0;
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-agents-fontSize-body2);
+	min-width: 0;
+	/* Commands and URLs often have no space to break at, so allow a break anywhere rather
+	than letting them run past the pane's edge. */
+	overflow-wrap: anywhere;
+}
+
+.ai-customization-management-editor .embedded-mcp-detail .mcp-detail-fact-value.is-code {
+	font-family: var(--monaco-monospace-font);
+	user-select: text;
 }
 
 /* Models section footer */
@@ -1809,24 +1863,26 @@ the part that actually needs attention. */
 	flex-shrink: 0;
 }
 
-.mcp-server-item .mcp-server-status.running {
+/* Status colour is shared by the list row and the detail pane so the two can never
+disagree about what "Running" looks like. Layout stays scoped to each surface. */
+.mcp-server-status.running {
 	color: var(--vscode-charts-green);
 }
 
-.mcp-server-item .mcp-server-status.starting {
+.mcp-server-status.starting {
 	color: var(--vscode-progressBar-background, var(--vscode-icon-foreground));
 }
 
-.mcp-server-item .mcp-server-status.auth-required {
+.mcp-server-status.auth-required {
 	color: var(--vscode-list-warningForeground, var(--vscode-editorWarning-foreground));
 }
 
-.mcp-server-item .mcp-server-status.error {
+.mcp-server-status.error {
 	color: var(--vscode-testing-iconFailed, var(--vscode-errorForeground));
 }
 
-.mcp-server-item .mcp-server-status.stopped,
-.mcp-server-item .mcp-server-status.disabled {
+.mcp-server-status.stopped,
+.mcp-server-status.disabled {
 	color: var(--vscode-descriptionForeground);
 }
 

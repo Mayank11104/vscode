@@ -394,7 +394,7 @@ function createMockHarnessService(sessionResource: URI, descriptors: readonly IH
 	}();
 }
 
-function makeLocalMcpServer(id: string, label: string, scope: LocalMcpServerScope, description?: string, config?: IWorkbenchMcpServer['config']): IWorkbenchMcpServer {
+function makeLocalMcpServer(id: string, label: string, scope: LocalMcpServerScope, description?: string, config?: IWorkbenchMcpServer['config'], version?: string): IWorkbenchMcpServer {
 	return new class extends mock<IWorkbenchMcpServer>() {
 		override readonly id = id;
 		override readonly name = id;
@@ -405,6 +405,8 @@ function makeLocalMcpServer(id: string, label: string, scope: LocalMcpServerScop
 		override readonly local = new class extends mock<IWorkbenchLocalMcpServer>() {
 			override readonly id = id;
 			override readonly scope = scope;
+			override readonly config = config!;
+			override readonly version = version;
 		}();
 	}();
 }
@@ -559,10 +561,15 @@ const mcpUserServers = [
  * exposed even for stopped servers, mirroring the real cache: a stopped server still knows
  * what it offered last time it ran.
  */
-function makeRuntimeServerFacts(toolCount: number, cacheState: McpServerCacheState, transport: McpServerTransportType) {
+function makeRuntimeServerFacts(toolCount: number, cacheState: McpServerCacheState, transport: McpServerTransportType, tools?: readonly (readonly [string, string])[]) {
+	const entries = Array.from({ length: toolCount }, (_, i) => tools?.[i] ?? [`tool_${i}`, ''] as const);
 	return {
 		cacheState: constObservable(cacheState),
-		tools: constObservable(Array.from({ length: toolCount }, (_, i) => ({ id: `tool-${i}` }))),
+		tools: constObservable(entries.map(([referenceName, description], i) => ({
+			id: `tool-${i}`,
+			referenceName,
+			definition: { name: referenceName, description },
+		}))),
 		readDefinitions: () => constObservable({ server: { launch: { type: transport } }, collection: undefined }),
 	};
 }
@@ -583,7 +590,15 @@ const mcpEnablementModel = {
  * list matches production -- notably that every installed row carries an on/off switch -- and
  * override only the few whose interesting states we want in the baselines.
  */
+const componentExplorerTools = [
+	['render', 'Render component fixtures to PNG screenshots for the given fixture id pattern.'],
+	['list_fixtures', 'List every registered component fixture with its id and labels.'],
+	['compare', 'Compare the current screenshots against the committed baselines.'],
+	['accept', 'Promote the current screenshots to be the new baselines.'],
+] as const;
+
 const mcpRuntimeOverrides: Record<string, Partial<ReturnType<typeof makeRuntimeServer>>> = {
+	'component-explorer': { ...makeRuntimeServerFacts(componentExplorerTools.length, McpServerCacheState.Cached, McpServerTransportType.Stdio, componentExplorerTools) },
 	'mcp-postgres': { connectionState: constObservable({ state: McpConnectionState.Kind.Error, message: 'connect ECONNREFUSED 127.0.0.1:5432' }), ...makeRuntimeServerFacts(8, McpServerCacheState.Cached, McpServerTransportType.Stdio) },
 	'mcp-web-search': { enablement: constObservable(ContributionEnablementState.DisabledWorkspace) },
 	'mcp-filesystem': { ...makeRuntimeServerFacts(11, McpServerCacheState.Cached, McpServerTransportType.Stdio) },
@@ -1369,9 +1384,55 @@ function renderPluginDisabled(ctx: ComponentFixtureContext, byPolicy: boolean): 
 // Embedded compact detail widgets — standalone (no host editor)
 // ============================================================================
 
-function renderEmbeddedMcpDetail(ctx: ComponentFixtureContext, server: IWorkbenchMcpServer | undefined): void {
-	const width = 480;
-	const height = 320;
+// Detail-pane fixture data. The pane reads the installed configuration (not the resolved
+// launch), so these mirror what a user would have written in mcp.json.
+const detailStdioConfig: IWorkbenchMcpServer['config'] = {
+	type: McpServerType.LOCAL,
+	command: 'npx',
+	args: ['-y', '@modelcontextprotocol/server-postgres'],
+	env: { POSTGRES_URL: '${input:postgres-url}', PGSSLMODE: 'require' },
+	cwd: '/workspace/api',
+};
+
+const detailHttpConfig: IWorkbenchMcpServer['config'] = {
+	type: McpServerType.REMOTE,
+	url: 'https://mcp.example.com/v1/search',
+	headers: { Authorization: 'Bearer sk-live-not-shown', 'X-Client': 'vscode' },
+};
+
+const postgresTools = [
+	['query', 'Run a read-only SQL query against the connected database and return the rows.'],
+	['list_tables', 'List every table in the current schema, with row counts.'],
+	['describe_table', 'Return the columns, types, and indexes for a single table.'],
+	['explain', 'Return the query plan for a statement without running it.'],
+] as const;
+
+const webSearchTools = [
+	['search', 'Search the web and return the top results with titles and snippets.'],
+	['fetch_page', 'Fetch a single URL and return its readable text content.'],
+] as const;
+
+function makeDetailRuntimeServer(
+	id: string,
+	label: string,
+	state: McpConnectionState.Kind,
+	tools: readonly (readonly [string, string])[],
+	enablement: ContributionEnablementState | undefined = ContributionEnablementState.EnabledProfile,
+	cacheState: McpServerCacheState = McpServerCacheState.Cached,
+) {
+	return {
+		definition: { id, label },
+		collection: { id: `fixture/${id}`, label },
+		enablement: constObservable(enablement ?? ContributionEnablementState.EnabledProfile),
+		connectionState: constObservable({ state }),
+		showOutput() { },
+		...makeRuntimeServerFacts(tools.length, cacheState, McpServerTransportType.Stdio, tools),
+	};
+}
+
+function renderEmbeddedMcpDetail(ctx: ComponentFixtureContext, server: IWorkbenchMcpServer | undefined, runtime?: object, size?: { width: number; height: number }): void {
+	const width = size?.width ?? 480;
+	const height = size?.height ?? 320;
 	ctx.container.style.width = `${width}px`;
 	ctx.container.style.height = `${height}px`;
 
@@ -1384,6 +1445,12 @@ function renderEmbeddedMcpDetail(ctx: ComponentFixtureContext, server: IWorkbenc
 				override readonly onReset = Event.None;
 				override readonly local: IWorkbenchMcpServer[] = server ? [server] : [];
 				override async open() { /* no-op in fixture */ }
+			}());
+			// The pane reads status and tools from the running counterpart of the installed
+			// server, so a runtime server has to be present for those sections to render.
+			reg.defineInstance(IMcpService, new class extends mock<IMcpService>() {
+				override readonly servers = constObservable((runtime ? [runtime] : []) as never[]);
+				override readonly enablementModel = mcpEnablementModel;
 			}());
 		},
 	});
@@ -1750,11 +1817,11 @@ export default defineThemedFixtureGroup({ path: 'chat/aiCustomizations/' }, {
 		}),
 	}),
 
-	// An installed MCP row responds to selection but no longer opens a detail pane, so this
-	// covers selected-row rendering (including the enablement switch against the selection
-	// background). The embedded detail widget itself is covered by the EmbeddedMcpDetail*
-	// fixtures, and the click-opens-detail path now only exists for gallery rows.
-	McpServerRowSelected: defineComponentFixture({
+	// End-to-end detail path: clicking an installed MCP row opens its detail pane inside the
+	// host editor. Covers the pane's real surroundings -- the back button in the header's
+	// leading slot and the host's width -- which the standalone EmbeddedMcpDetail* fixtures
+	// deliberately leave out.
+	McpServerDetail: defineComponentFixture({
 		labels: { kind: 'screenshot' },
 		render: ctx => renderEditor(ctx, {
 			sessionResource: localSessionResource,
@@ -1785,16 +1852,40 @@ export default defineThemedFixtureGroup({ path: 'chat/aiCustomizations/' }, {
 	}),
 
 	// Standalone embedded MCP detail widget (compact split-pane component).
-	// Workspace-scope server with a description.
+	// Workspace-scope stdio server: exercises the command / working directory / environment
+	// facts and the tool list, which is the pane's whole reason to exist.
 	EmbeddedMcpDetailWorkspace: defineComponentFixture({
 		labels: { kind: 'screenshot' },
-		render: ctx => renderEmbeddedMcpDetail(ctx, makeLocalMcpServer('mcp-postgres', 'PostgreSQL', LocalMcpServerScope.Workspace, 'Database access for the active workspace')),
+		render: ctx => renderEmbeddedMcpDetail(
+			ctx,
+			makeLocalMcpServer('mcp-postgres', 'PostgreSQL', LocalMcpServerScope.Workspace, 'Database access for the active workspace', detailStdioConfig, '0.6.2'),
+			makeDetailRuntimeServer('mcp-postgres', 'PostgreSQL', McpConnectionState.Kind.Running, postgresTools, undefined, McpServerCacheState.Live),
+			{ width: 560, height: 520 },
+		),
 	}),
 
-	// Standalone embedded MCP detail widget — user-scope server.
+	// Standalone embedded MCP detail widget — user-scope HTTP server. Covers the address and
+	// header-name facts, and the "off" status winning over the connection state.
 	EmbeddedMcpDetailUser: defineComponentFixture({
 		labels: { kind: 'screenshot' },
-		render: ctx => renderEmbeddedMcpDetail(ctx, makeLocalMcpServer('mcp-web-search', 'Web Search', LocalMcpServerScope.User, 'Search the web from any session')),
+		render: ctx => renderEmbeddedMcpDetail(
+			ctx,
+			makeLocalMcpServer('mcp-web-search', 'Web Search', LocalMcpServerScope.User, 'Search the web from any session', detailHttpConfig),
+			makeDetailRuntimeServer('mcp-web-search', 'Web Search', McpConnectionState.Kind.Stopped, webSearchTools, ContributionEnablementState.DisabledWorkspace),
+			{ width: 560, height: 420 },
+		),
+	}),
+
+	// Standalone embedded MCP detail widget — a server that has never run, so its tools are
+	// unknown. The pane has to say so rather than imply the server offers nothing.
+	EmbeddedMcpDetailNoTools: defineComponentFixture({
+		labels: { kind: 'screenshot' },
+		render: ctx => renderEmbeddedMcpDetail(
+			ctx,
+			makeLocalMcpServer('mcp-graphql', 'GraphQL', LocalMcpServerScope.Workspace, 'Query GraphQL endpoints', detailStdioConfig),
+			makeDetailRuntimeServer('mcp-graphql', 'GraphQL', McpConnectionState.Kind.Stopped, [], undefined, McpServerCacheState.Unknown),
+			{ width: 560, height: 340 },
+		),
 	}),
 
 	// Standalone embedded MCP detail widget — empty / no input state.

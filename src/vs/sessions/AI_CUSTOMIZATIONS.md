@@ -324,9 +324,24 @@ The first sidebar entry is `Overview`, which opens the AI Customization manageme
 
 ### Embedded Detail Editors
 
-The management editor opens inline detail panes for prompt files, gallery MCP servers, and plugins. Installed MCP rows do not open a detail pane, because it would repeat the name, scope, and description the row already shows. Prompt-file details use the standard text editor pane. MCP and plugin details render dedicated compact widgets — `EmbeddedMcpServerDetail` and `EmbeddedAgentPluginDetail` — purpose-built for the narrow split-pane host. They show the icon, name, scope/source, and description. Do **not** embed the full extension-editor panes inside the split-pane host: they assume a wide page-level layout and don't shrink cleanly.
+The management editor opens inline detail panes for prompt files, MCP servers, and plugins. Every MCP server row opens its detail pane — one rule, no exceptions, so rows that look alike behave alike. Prompt-file details use the standard text editor pane. MCP and plugin details render dedicated compact widgets — `EmbeddedMcpServerDetail` and `EmbeddedAgentPluginDetail` — purpose-built for the narrow split-pane host. Do **not** embed the full extension-editor panes inside the split-pane host: they assume a wide page-level layout and don't shrink cleanly.
 
-The MCP detail fixture in `src/vs/workbench/test/browser/componentFixtures/sessions/aiCustomizationManagementEditor.fixture.ts` must open a real server row (not a group header) and use a local server with concrete config so the compact widget's scope/description rendering is covered by screenshots.
+#### MCP Server Detail
+
+The row already carries the name, status, origin, transport, tool *count*, and description. The pane exists to answer the two questions a row has no room for, in this order:
+
+1. **Configuration** — what the server actually runs: `Command` / `Working directory` / `Environment` for stdio servers, `Address` / `Headers` for HTTP ones. Read from the installed configuration (`server.local?.config ?? server.config`), not the resolved runtime launch, so it renders whether or not the server has ever started.
+2. **Tools** — the full list with each tool's own description. This is the reason to install a server at all, and was previously visible only as a number.
+
+Configuration sits above Tools even though Tools matter more: the configuration block is short and fixed-height while the tool list is unbounded, so putting Tools first would push Configuration below the fold on any server with more than a handful of tools.
+
+**Environment variable and header *values* are never rendered — only their key names.** These routinely carry API tokens, and the useful information is *which* variables a server reads, not what the secret is. `command`, `args`, and `url` are shown in full: they are what the user wrote in `mcp.json`.
+
+When the server has never run (`McpServerCacheState.Unknown`) the pane says so explicitly rather than rendering an empty list, which would read as "this server offers nothing". When the tools came from cache, a short note says they are from the last run.
+
+Status is resolved exactly as the list row resolves it and is rendered through the shared `getMcpStatusPresentation`, so the word and its colour can never disagree between the two surfaces. Installed↔runtime server matching lives in `mcpServerIdentity.ts`, shared with the list widget.
+
+The MCP detail fixtures in `src/vs/workbench/test/browser/componentFixtures/sessions/aiCustomizationManagementEditor.fixture.ts` must cover a stdio server with tools, an HTTP server (address + header names), and a server that has never run, plus `McpServerDetail`, which opens the pane from a real installed row inside the host editor so the back button and host width are covered.
 
 ### Debug Panel
 

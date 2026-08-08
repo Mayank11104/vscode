@@ -24,6 +24,7 @@ import { MCP_PLUGIN_COLLECTION_ID_PREFIX } from '../../../mcp/common/discovery/p
 import { ExtensionIdentifier } from '../../../../../platform/extensions/common/extensions.js';
 import { ContributionEnablementState, isContributionDisabled, isContributionEnabled, isWorkspaceScopedEnablement, toggleContributionEnablement } from '../../common/enablement.js';
 import { EnablementSwitch } from './enablementSwitch.js';
+import { getRuntimeServerMatchKeys, getUniqueMcpMatchKeys, getWorkbenchServerMatchKeys, LocalMcpServerMatcher } from './mcpServerIdentity.js';
 import { McpCommandIds } from '../../../../contrib/mcp/common/mcpCommandIds.js';
 import { autorun, IReader } from '../../../../../base/common/observable.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
@@ -631,12 +632,12 @@ export function getMcpServerOutputHandler(outputService: Pick<IOutputService, 's
 	return undefined;
 }
 
-interface IMcpStatusPresentation {
+export interface IMcpStatusPresentation {
 	readonly label: string;
 	readonly className: string;
 }
 
-function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcpStatusPresentation | undefined {
+export function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcpStatusPresentation | undefined {
 	if (state === undefined) {
 		return undefined;
 	}
@@ -701,21 +702,6 @@ function getMcpEntryAriaLabel(element: IMcpListEntry, isSessionsWindow: boolean)
 		: label;
 }
 
-function normalizeMcpMatchKey(value: string | undefined): string | undefined {
-	return value || undefined;
-}
-
-function getUniqueMcpMatchKeys(values: readonly (string | undefined)[]): string[] {
-	const keys = new Set<string>();
-	for (const value of values) {
-		const key = normalizeMcpMatchKey(value);
-		if (key) {
-			keys.add(key);
-		}
-	}
-	return [...keys];
-}
-
 class ActiveSessionMcpServerMatcher {
 	private readonly byKey = new Map<string, AgentHostMcpServer[]>();
 	private readonly matchedIds = new Set<string>();
@@ -751,46 +737,11 @@ class ActiveSessionMcpServerMatcher {
 	}
 }
 
-class LocalMcpServerMatcher {
-	private readonly byKey = new Map<string, IMcpServer[]>();
-
-	constructor(servers: readonly IMcpServer[]) {
-		for (const server of servers) {
-			for (const key of getRuntimeServerMatchKeys(server)) {
-				let matches = this.byKey.get(key);
-				if (!matches) {
-					matches = [];
-					this.byKey.set(key, matches);
-				}
-				matches.push(server);
-			}
-		}
-	}
-
-	find(keys: readonly (string | undefined)[]): IMcpServer | undefined {
-		for (const key of getUniqueMcpMatchKeys(keys)) {
-			const matches = this.byKey.get(key);
-			if (matches?.length === 1) {
-				return matches[0];
-			}
-		}
-		return undefined;
-	}
-}
-
 function matchesActiveSessionServerQuery(server: AgentHostMcpServer, query: string): boolean {
 	if (!query) {
 		return true;
 	}
 	return server.name.toLowerCase().includes(query);
-}
-
-function getWorkbenchServerMatchKeys(server: IWorkbenchMcpServer): string[] {
-	return getUniqueMcpMatchKeys([server.id, server.name, server.label]);
-}
-
-function getRuntimeServerMatchKeys(server: IMcpServer): string[] {
-	return getUniqueMcpMatchKeys([server.definition.id, server.definition.label]);
 }
 
 function getActiveSessionServerLifecycleAction(server: AgentHostMcpServer): Action | undefined {
@@ -1334,18 +1285,16 @@ export class McpListWidget extends Disposable {
 				return;
 			}
 			// One rule per row shape, so a click never has to be guessed at. Group headers
-			// collapse. Gallery results open their detail page, because that is the only place a
-			// detail page has anything to show. Installed rows do nothing on click: their whole
-			// row was previously a coin-flip between "opens a panel", "opens a quick pick", and
-			// "does nothing at all", depending on whether a description happened to exist. What
-			// you can do to them now lives in the switch and the context menu, in one place.
+			// collapse; every server row opens its detail page. The row was previously a
+			// coin-flip between "opens a panel", "opens a quick pick", and "does nothing at
+			// all", depending on whether a description happened to exist — and the panel it
+			// sometimes opened only repeated what the row already said. Now the detail page
+			// shows what the row cannot fit (the tool list, and what the server runs), so one
+			// destination is worth having and every row can share it.
 			if (e.element.type === 'group-header') {
 				this.toggleGroup(e.element);
 			} else if (e.element.type === 'server-item') {
-				const server = e.element.server;
-				if (e.element.marketplace || !server.local) {
-					this._onDidSelectServer.fire(server);
-				}
+				this._onDidSelectServer.fire(e.element.server);
 			}
 		}));
 
