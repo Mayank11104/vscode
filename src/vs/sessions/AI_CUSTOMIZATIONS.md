@@ -306,11 +306,11 @@ Provider-supplied customization rows that include an explicit storage origin are
 
 ### MCP Active Session Status
 
-The MCP Servers section combines locally known MCP servers with MCP servers reported by the active agent-host session (`IAgentHostCustomizationService.getMcpServers(activeSessionResource)`). Active-session servers are matched to known workspace, user, extension, plugin, or built-in rows by stable identifiers and display names so the row can show the active session's status, matching `MCP: List Servers`. Active-session servers that do not match any known local/runtime server are appended to the **Your Servers** group and counted with the rest of the section.
+The MCP Servers section combines locally known MCP servers with MCP servers reported by the active agent-host session (`IAgentHostCustomizationService.getMcpServers(activeSessionResource)`). Active-session servers are matched to known workspace, user, extension, plugin, or built-in rows by stable identifiers and display names so the row can show the active session's status, matching `MCP: List Servers`. Active-session servers that do not match any known local/runtime server are appended to the **From Installed Software** group and counted with the rest of the section.
 
 The MCP list uses `WorkbenchList` as its sole scroll owner. Layout uses the widget's rendered content-box dimensions rather than the padded panel's outer dimensions, and the virtual delegate height matches each rendered row variant. Rows are a uniform height because every row now carries a meta line, so the delegate returns one value. These invariants keep the final row fully reachable at the bottom of the list.
 
-Search filters the rendered list but never the section count: the sidebar badge and group counts reflect the full set, so typing does not appear to delete servers. Runtime servers are de-duplicated against the *unfiltered* set of local servers, otherwise a local server hidden by the query would stop suppressing its runtime twin and searching would surface duplicates. Search matches on both label and description for every group.
+Search filters the rendered list but never the sidebar badge: the badge counts what the user has, so typing does not appear to delete servers from the navigation. Group counts do track the filtered entries, because a group header describes the rows underneath it. Runtime servers are de-duplicated against the *unfiltered* set of local servers, otherwise a local server hidden by the query would stop suppressing its runtime twin and searching would surface duplicates. Search matches on both label and description for every group.
 
 ### Sidebar Customizations Section
 

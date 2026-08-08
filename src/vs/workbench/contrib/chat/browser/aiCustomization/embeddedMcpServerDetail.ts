@@ -135,11 +135,16 @@ export class EmbeddedMcpServerDetail extends Disposable {
 
 	setInput(server: IWorkbenchMcpServer): void {
 		this.current = server;
+		// Reset here rather than in render(): render() now also runs for unrelated global
+		// changes, and resetting there re-spoke the tool count every time any other server
+		// was toggled or mcp.json was saved.
+		this.announcedToolCount = undefined;
 		this.render();
 	}
 
 	clearInput(): void {
 		this.current = undefined;
+		this.announcedToolCount = undefined;
 		this.render();
 	}
 
@@ -177,7 +182,6 @@ export class EmbeddedMcpServerDetail extends Disposable {
 
 		this.renderConfiguration(server);
 
-		this.announcedToolCount = undefined;
 		this.liveRender.value = autorun(reader => {
 			const runtime = findRuntimeMcpServer(this.mcpService.servers.read(reader), server);
 			this.renderStatus(server, runtime, reader);

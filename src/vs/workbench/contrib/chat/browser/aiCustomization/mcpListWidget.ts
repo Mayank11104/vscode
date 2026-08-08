@@ -534,7 +534,11 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		}
 
 		if (errorMessage) {
-			templateData.actionDisposables.add(this.hoverService.setupDelayedHover(templateData.container, () => ({
+			// Anchored to the line the error is printed on, not the row. Built-in rows already
+			// register a provenance hover on the container, and the hover service keys delayed
+			// hovers by target element -- two registrations on one element overwrite each other's
+			// entry, so whichever was torn down last took the survivor's keyboard hover with it.
+			templateData.actionDisposables.add(this.hoverService.setupDelayedHover(templateData.description, () => ({
 				content: errorMessage,
 				appearance: { compact: false, skipFadeInAnimation: true },
 			})));
