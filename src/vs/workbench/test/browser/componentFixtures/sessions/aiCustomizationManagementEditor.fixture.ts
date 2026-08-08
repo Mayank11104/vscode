@@ -1750,26 +1750,16 @@ export default defineThemedFixtureGroup({ path: 'chat/aiCustomizations/' }, {
 		}),
 	}),
 
-	// MCP server detail view — same alignment check for the detail back button.
-	McpServerDetail: defineComponentFixture({
+	// An installed MCP row responds to selection but no longer opens a detail pane, so this
+	// covers selected-row rendering (including the enablement switch against the selection
+	// background). The embedded detail widget itself is covered by the EmbeddedMcpDetail*
+	// fixtures, and the click-opens-detail path now only exists for gallery rows.
+	McpServerRowSelected: defineComponentFixture({
 		labels: { kind: 'screenshot' },
 		render: ctx => renderEditor(ctx, {
 			sessionResource: localSessionResource,
 			selectedSection: AICustomizationManagementSection.McpServers,
 			openFirstItem: true,
-		}),
-	}),
-
-	// MCP server detail view in a narrow viewport — catches embedded header overflow
-	// and the single-tab configuration layout used by local workspace servers.
-	McpServerDetailNarrow: defineComponentFixture({
-		labels: { kind: 'screenshot' },
-		render: ctx => renderEditor(ctx, {
-			sessionResource: localSessionResource,
-			selectedSection: AICustomizationManagementSection.McpServers,
-			openFirstItem: true,
-			width: 550,
-			height: 400,
 		}),
 	}),
 
