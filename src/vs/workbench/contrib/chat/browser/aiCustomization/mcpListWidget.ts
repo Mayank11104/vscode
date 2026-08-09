@@ -22,7 +22,7 @@ import { IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState, McpServe
 import { IMcpRegistry } from '../../../mcp/common/mcpRegistryTypes.js';
 import { MCP_PLUGIN_COLLECTION_ID_PREFIX } from '../../../mcp/common/discovery/pluginMcpDiscovery.js';
 import { ExtensionIdentifier } from '../../../../../platform/extensions/common/extensions.js';
-import { ContributionEnablementState, isContributionDisabled, isContributionEnabled, isWorkspaceScopedEnablement, toggleContributionEnablement } from '../../common/enablement.js';
+import { ContributionEnablementState, isContributionDisabled, isContributionEnabled, isWorkspaceScopedEnablement } from '../../common/enablement.js';
 import { EnablementSwitch } from './enablementSwitch.js';
 import { getRuntimeServerMatchKeys, getUniqueMcpMatchKeys, getWorkbenchServerMatchKeys, LocalMcpServerMatcher } from './mcpServerIdentity.js';
 import { McpCommandIds } from '../../../../contrib/mcp/common/mcpCommandIds.js';
@@ -598,12 +598,12 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		}
 
 		const checked = target.isEnabled();
-		toggle.update(checked, getEnablementSwitchLabel(label, checked, target.scope));
+		toggle.update(checked, getEnablementSwitchLabel(label, checked));
 		templateData.actionDisposables.add(toggle.onDidToggle(() => target.setEnabled(!target.isEnabled())));
 		templateData.actionDisposables.add(this.hoverService.setupManagedHover(
 			getDefaultHoverDelegate('element'),
 			toggle.element,
-			getEnablementSwitchLabel(label, checked, target.scope)));
+			getEnablementSwitchLabel(label, checked)));
 	}
 
 	/**
@@ -1072,17 +1072,28 @@ function isLocalMcpServerEnablementAction(action: IAction): boolean {
 		|| action instanceof DisableMcpServerForWorkspaceAction;
 }
 
-/** Which layer a row's switch acts on, used to say so out loud in the label. */
+/**
+ * Which layer a piece of state lives in.
+ *
+ * This describes *state*, not the switch: the switch is uniform. It survives so the row can
+ * explain a server that something else turned off -- "Off (Workspace)" tells you the choice is
+ * not the one you would make here, which is the difference between a puzzling row and a clear one.
+ */
 export const enum McpEnablementScope {
 	/** Everywhere, for this user. */
 	Global,
-	/** Only in this workspace, because that is where the existing choice lives. */
+	/** Only in this workspace. */
 	Workspace,
 	/** Only for the running session. */
 	Session,
 }
 
 export interface IMcpEnablementTarget {
+	/**
+	 * The layer this switch writes. Uniform for every durable row by design; session-only
+	 * servers report Session because that is the only layer they have, not because the control
+	 * means something different there.
+	 */
 	readonly scope: McpEnablementScope;
 	isEnabled(): boolean;
 	setEnabled(enabled: boolean): void;
@@ -1119,23 +1130,24 @@ export function getEnablementTarget(element: IMcpServerItemEntry | IMcpSessionSe
 	}
 
 	const id = localServer.definition.id;
-	// Name the layer the switch will actually rewrite. When the durable choice already says
-	// on and only the session is holding the server off, flipping the switch touches nothing
-	// but the session -- so promising to "turn on {name}" everywhere would overstate its reach,
-	// and would disagree with the row's own "Off (Session)".
-	const sessionIsTheOnlyBlocker = isContributionEnabled(enablement) && activeSessionServer?.enabled === false;
 	return {
-		scope: sessionIsTheOnlyBlocker
-			? McpEnablementScope.Session
-			: isWorkspaceScopedEnablement(enablement) ? McpEnablementScope.Workspace : McpEnablementScope.Global,
+		// One control, one meaning. The switch used to rewrite whichever layer happened to hold
+		// the current choice, which made two identical-looking switches do materially different
+		// things: "off until you turn it back on" and "off until this session ends" are not the
+		// same act. Scoped choices are still available, but from the context menu, where they
+		// are spelled out. Here the switch always means the whole, durable answer.
+		scope: McpEnablementScope.Global,
 		// A row can be held off by the durable choice, the session choice, or both. The switch
 		// reflects the union, and flipping it aligns every layer that disagrees -- a switch that
 		// leaves the server still visibly off after being turned on is a broken switch.
 		isEnabled: () => isContributionEnabled(enablement) && activeSessionServer?.enabled !== false,
 		setEnabled: enabled => {
-			if (isContributionEnabled(enablement) !== enabled) {
-				mcpService.enablementModel.setEnabled(id, toggleContributionEnablement(enablement));
-			}
+			// Writing a profile-level state also clears any workspace entry (see
+			// EnablementModel.setEnabled), which is what makes the promise on the label true:
+			// a narrower choice cannot survive and silently mask what the user just asked for.
+			mcpService.enablementModel.setEnabled(id, enabled
+				? ContributionEnablementState.EnabledProfile
+				: ContributionEnablementState.DisabledProfile);
 			// Dispatched unconditionally: `enabled` here is a snapshot taken when the list was
 			// built, and the durable write above notifies synchronously, which can rebuild the
 			// list underneath this closure. Guarding on the stale value could drop the session
@@ -1145,22 +1157,17 @@ export function getEnablementTarget(element: IMcpServerItemEntry | IMcpSessionSe
 	};
 }
 
-/** Names both the act and the reach, so the switch never hides which choice it is rewriting. */
-function getEnablementSwitchLabel(name: string, checked: boolean, scope: McpEnablementScope): string {
-	switch (scope) {
-		case McpEnablementScope.Workspace:
-			return checked
-				? localize('mcpSwitchOffWorkspace', "Turn off {0} in this workspace", name)
-				: localize('mcpSwitchOnWorkspace', "Turn on {0} in this workspace", name);
-		case McpEnablementScope.Session:
-			return checked
-				? localize('mcpSwitchOffSession', "Turn off {0} for this session", name)
-				: localize('mcpSwitchOnSession', "Turn on {0} for this session", name);
-		default:
-			return checked
-				? localize('mcpSwitchOff', "Turn off {0}", name)
-				: localize('mcpSwitchOn', "Turn on {0}", name);
-	}
+/**
+ * Names the act, and only the act.
+ *
+ * The label used to name the layer being written too, which was honest but meant the same
+ * control read differently from row to row. A switch is a binary control; it can carry one
+ * meaning. Where a server lives is a property of the server, and the row already says it.
+ */
+function getEnablementSwitchLabel(name: string, checked: boolean): string {
+	return checked
+		? localize('mcpSwitchOff', "Turn off {0}", name)
+		: localize('mcpSwitchOn', "Turn on {0}", name);
 }
 
 /** The scope note appended to `Off`, shown only when the reach is narrower than everywhere. */

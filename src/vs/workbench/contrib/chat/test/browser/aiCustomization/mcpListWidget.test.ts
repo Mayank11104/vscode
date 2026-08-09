@@ -359,16 +359,20 @@ suite('mcpListWidget', () => {
 			assert.strictEqual(getEnablementTarget(entry, createMcpService(ContributionEnablementState.EnabledProfile).service, undefined), undefined);
 		});
 
-		test('a workspace-scoped choice is named as such, and toggling stays in that layer', () => {
+		test('a workspace-scoped choice is answered in full, not perpetuated', () => {
+			// The switch used to rewrite whichever layer held the choice, so two identical
+			// switches could mean "off here" and "off everywhere". It now always means the
+			// whole answer; writing the profile state also clears the workspace entry, so the
+			// narrower choice cannot survive and mask what the user just asked for.
 			const { entry } = createLocalEntry();
 			const { service, calls } = createMcpService(ContributionEnablementState.DisabledWorkspace);
 			const target = getEnablementTarget(entry, service, ContributionEnablementState.DisabledWorkspace);
 			target?.setEnabled(true);
 
 			assert.deepStrictEqual({ scope: target?.scope, isEnabled: target?.isEnabled(), calls }, {
-				scope: McpEnablementScope.Workspace,
+				scope: McpEnablementScope.Global,
 				isEnabled: false,
-				calls: [['mcp-redis', ContributionEnablementState.EnabledWorkspace]],
+				calls: [['mcp-redis', ContributionEnablementState.EnabledProfile]],
 			});
 		});
 
@@ -385,16 +389,17 @@ suite('mcpListWidget', () => {
 			});
 		});
 
-		test('a session-off row reads as off and turning it on touches only the session', () => {
+		test('a session-off row reads as off and turning it on settles every layer', () => {
 			const { entry, sessionCalls } = createLocalEntry({ activeSessionEnabled: false });
 			const { service, calls } = createMcpService(ContributionEnablementState.EnabledProfile);
 			const target = getEnablementTarget(entry, service, ContributionEnablementState.EnabledProfile);
 			const wasEnabled = target?.isEnabled();
 			target?.setEnabled(true);
 
-			assert.deepStrictEqual({ wasEnabled, calls, sessionCalls }, {
+			assert.deepStrictEqual({ scope: target?.scope, wasEnabled, calls, sessionCalls }, {
+				scope: McpEnablementScope.Global,
 				wasEnabled: false,
-				calls: [],
+				calls: [['mcp-redis', ContributionEnablementState.EnabledProfile]],
 				sessionCalls: [true],
 			});
 		});
