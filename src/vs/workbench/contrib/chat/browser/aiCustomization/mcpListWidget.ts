@@ -245,6 +245,14 @@ interface IMcpServerItemTemplateData {
 	 * re-runs the status autorun, which would tear the focused button out of the document.
 	 */
 	readonly enablementSwitch: EnablementSwitch;
+	/**
+	 * What the trailing slot and meta line were last built from. The status autorun fires far
+	 * more often than its inputs change -- several times a second for a server stuck in an
+	 * error retry loop -- and rebuilding on every tick destroys the buttons mid-interaction.
+	 */
+	renderedSignature?: string;
+	/** Which row the signature belongs to, so a recycled template cannot reuse another row's. */
+	renderedRowKey?: string;
 	readonly elementDisposables: DisposableStore;
 	readonly actionDisposables: DisposableStore;
 	/** Static, per-element facts that the dynamic status update needs to re-render line two. */
@@ -331,8 +339,20 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 	}
 
 	renderElement(element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, index: number, templateData: IMcpServerItemTemplateData): void {
+		// The list re-splices on every MCP service change -- several times a second while a
+		// server sits in an error retry loop -- and each splice re-renders every row. The row's
+		// DOM is reused across those renders, so tearing down the trailing slot each time
+		// destroys buttons the user may be pressing. Keep it when the same row is re-rendered
+		// with the same content; `updateStatus` decides that from the signature below.
+		const rowKey = getMcpRowKey(element);
+		if (templateData.renderedRowKey !== rowKey) {
+			templateData.renderedRowKey = rowKey;
+			templateData.renderedSignature = undefined;
+			templateData.actionDisposables.clear();
+			DOM.clearNode(templateData.actions);
+		}
+		// Always re-created: these autoruns capture `element`, which is a fresh object per splice.
 		templateData.elementDisposables.clear();
-		templateData.actionDisposables.clear();
 
 		if (element.type === 'builtin-item') {
 			templateData.container.classList.add('builtin');
@@ -454,6 +474,22 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 	}
 
 	private updateStatus(templateData: IMcpServerItemTemplateData, element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, rowState: IMcpRowState): void {
+		// Rebuilding tears down and recreates the inline buttons. A DOM node that is replaced
+		// between mousedown and mouseup never receives a click at all, so an unconditional
+		// rebuild here made "Show Output" unclickable on precisely the rows that need it: an
+		// erroring server re-runs this autorun about twice a second while rendering the exact
+		// same thing every time. Only touch the DOM when something visible actually moved.
+		const activeSessionServer = getActiveSessionServer(element);
+		const signature = JSON.stringify([
+			rowState.status, rowState.statusScope, rowState.errorMessage, rowState.enablement,
+			rowState.toolCount, rowState.toolsFromCache, rowState.transport,
+			activeSessionServer?.id, activeSessionServer?.enabled, activeSessionServer?.status,
+		]);
+		if (templateData.renderedSignature === signature) {
+			return;
+		}
+		templateData.renderedSignature = signature;
+
 		templateData.actionDisposables.clear();
 		DOM.clearNode(templateData.actions);
 		DOM.clearNode(templateData.status);
@@ -473,7 +509,6 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 
 		this.renderMetaLine(templateData, rowState);
 
-		const activeSessionServer = getActiveSessionServer(element);
 		const label = getMcpEntryLabel(element);
 		const activeSessionResource = this.customizationHarnessService.activeSessionResource.get();
 		const showActiveSessionOutput = activeSessionServer
@@ -694,6 +729,21 @@ export function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcp
 
 function getActiveSessionServer(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): AgentHostMcpServer | undefined {
 	return entry.type === 'session-server-item' ? entry.server : entry.activeSessionServer;
+}
+
+/**
+ * Content identity of a row. List entries are rebuilt on every refresh, so object identity says
+ * nothing about whether this is still the same server in the same place.
+ */
+function getMcpRowKey(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): string {
+	switch (entry.type) {
+		case 'server-item':
+			return `server:${entry.server.id}:${entry.marketplace ? 1 : 0}`;
+		case 'session-server-item':
+			return `session:${entry.server.id}`;
+		case 'builtin-item':
+			return `builtin:${entry.id}`;
+	}
 }
 
 function getMcpEntryLabel(element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): string {
