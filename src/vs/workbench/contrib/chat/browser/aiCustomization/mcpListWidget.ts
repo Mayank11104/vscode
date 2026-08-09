@@ -499,7 +499,7 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 
 		// Status reads as a word next to the name. Every state gets one, including the states that
 		// previously resolved to an icon-less presentation and therefore rendered nothing at all.
-		const presentation = getMcpStatusPresentation(state);
+		const presentation = shouldShowStatusOnRow(state, rowState.statusScope) ? getMcpStatusPresentation(state) : undefined;
 		if (presentation) {
 			templateData.status.classList.add(presentation.className);
 			DOM.append(templateData.status, $('.mcp-server-status-dot'));
@@ -727,6 +727,42 @@ export function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcp
 	}
 }
 
+/**
+ * Whether a status is worth saying at all.
+ *
+ * Running and Idle are lifecycle, not news. VS Code starts MCP servers lazily -- a server
+ * launches when a tool call needs it and shuts down afterwards -- so whether a process happens
+ * to be alive right now is an implementation detail that flickers and that nobody acts on.
+ * Printing it made the most common word in the list also the least informative one.
+ */
+export function isNoteworthyMcpStatus(state: McpStatusKind | undefined): boolean {
+	switch (state) {
+		case undefined:
+		case McpConnectionState.Kind.Running:
+		case McpServerStatus.Ready:
+		case McpConnectionState.Kind.Stopped:
+		case McpServerStatus.Stopped:
+			return false;
+		default:
+			return true;
+	}
+}
+
+/**
+ * Whether a *row* should print the status word.
+ *
+ * Stricter than {@link isNoteworthyMcpStatus} by one case: every installed row carries a switch,
+ * and a switch already shows off-ness better than a word can. "Off" beside an off switch is the
+ * same fact twice. A scope note is different -- "Off (Workspace)" says *where* the choice lives,
+ * which the switch has no way to express.
+ */
+function shouldShowStatusOnRow(state: McpStatusKind | undefined, statusScope: string | undefined): boolean {
+	if (state === 'disabled') {
+		return !!statusScope;
+	}
+	return isNoteworthyMcpStatus(state);
+}
+
 function getActiveSessionServer(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): AgentHostMcpServer | undefined {
 	return entry.type === 'session-server-item' ? entry.server : entry.activeSessionServer;
 }
@@ -808,7 +844,10 @@ export function getMcpEntryAriaLabel(element: IMcpListEntry, reader?: IReader): 
 		return localize('mcpGroupAriaLabel', "{0}, {1} items, {2}", element.label, element.count, element.collapsed ? localize('collapsed', "collapsed") : localize('expanded', "expanded"));
 	}
 	const label = getMcpEntryLabel(element);
-	const status = getMcpStatusPresentation(getMcpStatusKind(element, reader));
+	// Deliberately looser than the row: a screen reader reads the row label without the switch
+	// beside it, so "Off" is new information here even though it is duplication on screen.
+	const kind = getMcpStatusKind(element, reader);
+	const status = isNoteworthyMcpStatus(kind) ? getMcpStatusPresentation(kind) : undefined;
 	if (!status) {
 		return label;
 	}

@@ -15,7 +15,7 @@ import { McpServerStatus } from '../../../../../../platform/agentHost/common/sta
 import { ContributionEnablementState } from '../../../common/enablement.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IAgentHostCustomizationService } from '../../../browser/agentSessions/agentHost/agentHostCustomizationService.js';
-import { IMcpService } from '../../../../mcp/common/mcpTypes.js';
+import { IMcpService, McpConnectionState } from '../../../../mcp/common/mcpTypes.js';
 import {
 	AgentHostMcpServer,
 	authenticateMcpServer,
@@ -279,13 +279,30 @@ suite('mcpListWidget', () => {
 			return { type: 'server-item', server: { label: 'Redis', local: {} }, ...overrides } as unknown as Parameters<typeof getMcpEntryAriaLabel>[0];
 		}
 
-		test('an installed server that has never connected still reads as Stopped', () => {
-			assert.strictEqual(getMcpEntryAriaLabel(entry({})), 'Redis, Idle');
+		test('a healthy server is just its name: idle and running are not news', () => {
+			assert.strictEqual(getMcpEntryAriaLabel(entry({})), 'Redis');
 		});
 
-		test('a built-in row carries its status word too', () => {
+		test('a built-in row is likewise unadorned when nothing needs attention', () => {
 			const builtin = { type: 'builtin-item', label: 'GitHub Copilot' } as unknown as Parameters<typeof getMcpEntryAriaLabel>[0];
-			assert.strictEqual(getMcpEntryAriaLabel(builtin), 'GitHub Copilot, Idle');
+			assert.strictEqual(getMcpEntryAriaLabel(builtin), 'GitHub Copilot');
+		});
+
+		test('a failing server says so', () => {
+			const failed = entry({
+				localServer: {
+					enablement: constObservable(ContributionEnablementState.EnabledProfile),
+					connectionState: constObservable({ state: McpConnectionState.Kind.Error }),
+				},
+			});
+			assert.strictEqual(getMcpEntryAriaLabel(failed), 'Redis, Failed');
+		});
+
+		test('off is spoken even though the row leaves it to the switch', () => {
+			// The switch is a separate stop in the reading order, so a row label that omitted
+			// this would leave a screen reader user with no way to know the server is off.
+			const off = entry({ localServer: { enablement: constObservable(ContributionEnablementState.DisabledProfile) } });
+			assert.strictEqual(getMcpEntryAriaLabel(off), 'Redis, Off');
 		});
 
 		test('a gallery row has no status, because nothing is installed to have one', () => {

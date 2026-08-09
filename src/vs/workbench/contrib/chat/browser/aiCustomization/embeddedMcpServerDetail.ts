@@ -12,7 +12,7 @@ import { LocalMcpServerScope } from '../../../../services/mcp/common/mcpWorkbenc
 import { McpServerType } from '../../../../../platform/mcp/common/mcpPlatformTypes.js';
 import { IMcpServer, IMcpService, IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState, McpServerCacheState } from '../../../mcp/common/mcpTypes.js';
 import { isContributionDisabled } from '../../common/enablement.js';
-import { getMcpStatusPresentation } from './mcpListWidget.js';
+import { getMcpStatusPresentation, isNoteworthyMcpStatus } from './mcpListWidget.js';
 import { findRuntimeMcpServer } from './mcpServerIdentity.js';
 
 const $ = DOM.$;
@@ -199,7 +199,10 @@ export class EmbeddedMcpServerDetail extends Disposable {
 			// says so; without the same fallback the pane went blank for exactly the servers the
 			// conservative runtime matching declines to match.
 			: runtime?.connectionState.read(reader).state ?? McpConnectionState.Kind.Stopped;
-		const presentation = getMcpStatusPresentation(kind);
+		// This pane has no switch, so "Off" is worth saying here. Running and Idle still are not:
+		// whether a lazily-started server happens to hold a process right now is not why anyone
+		// opened this pane, and the Tools section below already says whether it has ever run.
+		const presentation = isNoteworthyMcpStatus(kind) ? getMcpStatusPresentation(kind) : undefined;
 
 		this.statusEl.className = presentation ? `mcp-server-status ${presentation.className}` : 'mcp-server-status';
 		this.statusEl.textContent = presentation?.label ?? '';
