@@ -586,8 +586,8 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 	 * Renders the on/off switch at the trailing edge of an installed row.
 	 *
 	 * It is the last thing in the row on purpose: every installed row has one, in the same place,
-	 * so turning a server off is a single predictable target rather than a right-click someone has
-	 * to guess at. Gallery rows get none — there is nothing to turn on until the server exists.
+	 * so disabling a server is a single predictable target rather than a right-click someone has
+	 * to guess at. Gallery rows get none — there is nothing to enable until the server exists.
 	 */
 	private renderEnablementSwitch(templateData: IMcpServerItemTemplateData, element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, rowState: IMcpRowState, label: string): void {
 		const toggle = templateData.enablementSwitch;
@@ -598,7 +598,11 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		}
 
 		const checked = target.isEnabled();
-		toggle.update(checked, getEnablementSwitchLabel(label, checked));
+		// The accessible name is the server, not the act. A `role="switch"` announces its own
+		// state from aria-checked, so an action phrase here would read "Disable Redis, switch,
+		// on" -- a label arguing with the state beside it. The hover still names the act,
+		// because a pointer user has no announced state to go on.
+		toggle.update(checked, label);
 		templateData.actionDisposables.add(toggle.onDidToggle(() => target.setEnabled(!target.isEnabled())));
 		templateData.actionDisposables.add(this.hoverService.setupManagedHover(
 			getDefaultHoverDelegate('element'),
@@ -706,7 +710,7 @@ export function getMcpStatusPresentation(state: McpStatusKind | undefined): IMcp
 		return undefined;
 	}
 	if (state === 'disabled') {
-		return { label: localize('disabled', "Off"), className: 'disabled' };
+		return { label: localize('disabled', "Disabled"), className: 'disabled' };
 	}
 	switch (state) {
 		case McpConnectionState.Kind.Running:
@@ -972,52 +976,72 @@ export function getSessionEnablementAction(server: AgentHostMcpServer): IAction 
 	);
 }
 
-/** Creates durable profile/workspace actions for an agent-host-only server. */
+/**
+ * Creates durable profile/workspace actions for an agent-host-only server.
+ *
+ * As with the local variant, each one settles the running session as well, so "Disable" means
+ * the server stops being used now rather than only from the next session onwards.
+ */
 export function getAgentHostMcpServerEnablementActions(agentHostCustomizations: IAgentHostCustomizationService, sessionResource: URI, server: AgentHostMcpServer, isEmptyWorkbench: boolean): IAction[] {
 	const disabled = isContributionDisabled(agentHostCustomizations.getMcpServerEnablement(sessionResource, server.name));
+	const settle = (state: ContributionEnablementState, enabled: boolean) => {
+		agentHostCustomizations.setMcpServerEnablement(sessionResource, server.name, state);
+		server.setEnabled(enabled);
+	};
 	const actions: IAction[] = [];
 	if (disabled) {
 		actions.push(new Action('mcpServer.agentHost.enable', localize('agentHostMcpServerEnable', "Enable"), undefined, true, () => {
-			agentHostCustomizations.setMcpServerEnablement(sessionResource, server.name, ContributionEnablementState.EnabledProfile);
+			settle(ContributionEnablementState.EnabledProfile, true);
 		}));
 		if (!isEmptyWorkbench) {
 			actions.push(new Action('mcpServer.agentHost.enableWorkspace', localize('agentHostMcpServerEnableForWorkspace', "Enable (Workspace)"), undefined, true, () => {
-				agentHostCustomizations.setMcpServerEnablement(sessionResource, server.name, ContributionEnablementState.EnabledWorkspace);
+				settle(ContributionEnablementState.EnabledWorkspace, true);
 			}));
 		}
 	} else {
 		actions.push(new Action('mcpServer.agentHost.disable', localize('agentHostMcpServerDisable', "Disable"), undefined, true, () => {
-			agentHostCustomizations.setMcpServerEnablement(sessionResource, server.name, ContributionEnablementState.DisabledProfile);
+			settle(ContributionEnablementState.DisabledProfile, false);
 		}));
 		if (!isEmptyWorkbench) {
 			actions.push(new Action('mcpServer.agentHost.disableWorkspace', localize('agentHostMcpServerDisableForWorkspace', "Disable (Workspace)"), undefined, true, () => {
-				agentHostCustomizations.setMcpServerEnablement(sessionResource, server.name, ContributionEnablementState.DisabledWorkspace);
+				settle(ContributionEnablementState.DisabledWorkspace, false);
 			}));
 		}
 	}
 	return actions;
 }
 
-/** Creates durable profile/workspace actions for a locally backed built-in server row. */
-export function getLocalMcpServerEnablementActions(mcpService: IMcpService, serverId: string, isEmptyWorkbench: boolean): IAction[] {
+/**
+ * Creates durable profile/workspace actions for a locally backed built-in server row.
+ *
+ * Every one of these settles the running session too. Disabling a server that carried on
+ * answering tool calls for the rest of the session is not disabling it; the menu was writing
+ * the durable layer and leaving the live one alone, so the switch beside it and the menu item
+ * above it disagreed about what the same word meant.
+ */
+export function getLocalMcpServerEnablementActions(mcpService: IMcpService, serverId: string, isEmptyWorkbench: boolean, activeSessionServer?: AgentHostMcpServer): IAction[] {
 	const disabled = isContributionDisabled(mcpService.enablementModel.readEnabled(serverId));
+	const settle = (state: ContributionEnablementState, enabled: boolean) => {
+		mcpService.enablementModel.setEnabled(serverId, state);
+		activeSessionServer?.setEnabled(enabled);
+	};
 	const actions: IAction[] = [];
 	if (disabled) {
 		actions.push(new Action('mcpServer.builtin.enable', localize('builtinMcpServerEnable', "Enable"), undefined, true, () => {
-			mcpService.enablementModel.setEnabled(serverId, ContributionEnablementState.EnabledProfile);
+			settle(ContributionEnablementState.EnabledProfile, true);
 		}));
 		if (!isEmptyWorkbench) {
 			actions.push(new Action('mcpServer.builtin.enableWorkspace', localize('builtinMcpServerEnableForWorkspace', "Enable (Workspace)"), undefined, true, () => {
-				mcpService.enablementModel.setEnabled(serverId, ContributionEnablementState.EnabledWorkspace);
+				settle(ContributionEnablementState.EnabledWorkspace, true);
 			}));
 		}
 	} else {
 		actions.push(new Action('mcpServer.builtin.disable', localize('builtinMcpServerDisable', "Disable"), undefined, true, () => {
-			mcpService.enablementModel.setEnabled(serverId, ContributionEnablementState.DisabledProfile);
+			settle(ContributionEnablementState.DisabledProfile, false);
 		}));
 		if (!isEmptyWorkbench) {
 			actions.push(new Action('mcpServer.builtin.disableWorkspace', localize('builtinMcpServerDisableForWorkspace', "Disable (Workspace)"), undefined, true, () => {
-				mcpService.enablementModel.setEnabled(serverId, ContributionEnablementState.DisabledWorkspace);
+				settle(ContributionEnablementState.DisabledWorkspace, false);
 			}));
 		}
 	}
@@ -1166,8 +1190,8 @@ export function getEnablementTarget(element: IMcpServerItemEntry | IMcpSessionSe
  */
 function getEnablementSwitchLabel(name: string, checked: boolean): string {
 	return checked
-		? localize('mcpSwitchOff', "Turn off {0}", name)
-		: localize('mcpSwitchOn', "Turn on {0}", name);
+		? localize('mcpSwitchOff', "Disable {0}", name)
+		: localize('mcpSwitchOn', "Enable {0}", name);
 }
 
 /** The scope note appended to `Off`, shown only when the reach is narrower than everywhere. */
@@ -1930,7 +1954,7 @@ export class McpListWidget extends Disposable {
 
 			if (e.element.localServer) {
 				const isEmptyWorkbench = this.workspaceService.getActiveProjectRoot() === undefined;
-				const enablementActions = getLocalMcpServerEnablementActions(this.mcpService, e.element.localServer.definition.id, isEmptyWorkbench);
+				const enablementActions = getLocalMcpServerEnablementActions(this.mcpService, e.element.localServer.definition.id, isEmptyWorkbench, e.element.activeSessionServer);
 				if (enablementActions.length > 0) {
 					if (actions.length > 0) {
 						actions.push(new Separator());

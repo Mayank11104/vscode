@@ -298,11 +298,11 @@ suite('mcpListWidget', () => {
 			assert.strictEqual(getMcpEntryAriaLabel(failed), 'Redis, Failed');
 		});
 
-		test('off is spoken even though the row leaves it to the switch', () => {
+		test('disabled is spoken even though the row leaves it to the switch', () => {
 			// The switch is a separate stop in the reading order, so a row label that omitted
 			// this would leave a screen reader user with no way to know the server is off.
 			const off = entry({ localServer: { enablement: constObservable(ContributionEnablementState.DisabledProfile) } });
-			assert.strictEqual(getMcpEntryAriaLabel(off), 'Redis, Off');
+			assert.strictEqual(getMcpEntryAriaLabel(off), 'Redis, Disabled');
 		});
 
 		test('a gallery row has no status, because nothing is installed to have one', () => {
@@ -311,7 +311,7 @@ suite('mcpListWidget', () => {
 
 		test('a row held off by the workspace says which layer turned it off', () => {
 			const held = entry({ localServer: { enablement: constObservable(ContributionEnablementState.DisabledWorkspace) } });
-			assert.strictEqual(getMcpEntryAriaLabel(held), 'Redis, Off (Workspace)');
+			assert.strictEqual(getMcpEntryAriaLabel(held), 'Redis, Disabled (Workspace)');
 		});
 	});
 
