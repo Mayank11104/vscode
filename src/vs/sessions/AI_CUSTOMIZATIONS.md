@@ -28,7 +28,7 @@ src/vs/workbench/contrib/chat/browser/aiCustomization/
 ├── customizationHarnessService.ts              # Core harness service impl (agent-gated)
 ├── customizationCreatorService.ts              # AI-guided creation flow
 ├── customizationGroupHeaderRenderer.ts         # Collapsible group header renderer
-├── mcpListWidget.ts                            # MCP servers section (Your Servers + From Installed Software)
+├── mcpListWidget.ts                            # MCP servers section (grouped by where each server is defined)
 ├── pluginListWidget.ts                         # Agent plugins section
 ├── aiCustomizationIcons.ts                     # Icons
 └── media/
@@ -246,7 +246,11 @@ AHP Remote Server ────────────────────�
 
 The MCP Servers tab merges local/workspace MCP configuration with MCP servers reported by the active agent-host session. When a listed server also exists in the active session, row status follows the session-backed server and lifecycle controls (start/stop) target the agent host. Model-access and sampling-log actions are hidden for session-backed rows because those are not inline session controls. Authentication-required rows expose an inline **Sign In** button, and failed rows expose a labelled **Show Output** button that opens that server's local or agent-host output.
 
-The list has exactly two groups, because it previously mixed two axes at once: *where the config lives* (Workspace/User) and *who provided the server* (Plugin/Extension/Built-in), which left no single question a user could answer to predict a server's group. The one axis that matters is who owns the configuration. **Your Servers** holds servers the user configured -- in this workspace, in their user settings, or in the agent host -- which they can edit and remove. **From Installed Software** holds servers that arrived with extensions, plugins, or VS Code, which they can turn off but not edit. Nothing is lost by collapsing, because every row's meta line already names its exact origin.
+Sections answer one question -- *where is this server defined?* -- and are ordered from the user's own choices outwards to the product's: **User**, **Workspace**, **Agent host**, **Extensions & Plugins**, **Built-in**. Empty sections are skipped, so a plain window shows four and a window with an agent-host session shows five.
+
+An earlier revision collapsed these to *Your Servers* / *From Installed Software*, on the theory that the original five mixed two axes. That diagnosis was wrong: Workspace/User and Extension/Plugin/Built-in are all answers to the same "where does this come from" question. The real defects were splitting Extension from Plugin -- one thing to a user, "software I installed" -- and leading with Workspace rather than the user's own settings.
+
+Because the header names the origin, the row does not repeat it: a row under **Workspace** reads `Local · <description>`, not `Workspace · Local · <description>`. The exception is **Extensions & Plugins**, where the header merges two origins, so those rows still say which one -- the same rule the status word follows: say it only when it is not already said. When a row would otherwise leave line two blank, the origin returns as a fallback rather than leaving a gap under the name.
 
 Clicking a row does one thing per row shape. Group headers collapse; every server row opens its detail page. Previously a click was a coin flip between opening a panel, opening a quick pick, or doing nothing at all, decided by whether a description happened to exist. Built-in and session rows are inert, and say so by not offering a pointer cursor -- the `has-detail` class marks exactly the rows that navigate.
 
@@ -312,7 +316,7 @@ Provider-supplied customization rows that include an explicit storage origin are
 
 ### MCP Active Session Status
 
-The MCP Servers section combines locally known MCP servers with MCP servers reported by the active agent-host session (`IAgentHostCustomizationService.getMcpServers(activeSessionResource)`). Active-session servers are matched to known workspace, user, extension, plugin, or built-in rows by stable identifiers and display names so the row can show the active session's status, matching `MCP: List Servers`. Active-session servers that do not match any known local/runtime server are appended to the **Your Servers** group and counted with the rest of the section, because they are the user's own configuration: they are created by this editor's "Add to Current Agent Session" flow, or written into the agent's config directly. Their meta line names their store as `Agent host`.
+The MCP Servers section combines locally known MCP servers with MCP servers reported by the active agent-host session (`IAgentHostCustomizationService.getMcpServers(activeSessionResource)`). Active-session servers are matched to known workspace, user, extension, plugin, or built-in rows by stable identifiers and display names so the row can show the active session's status, matching `MCP: List Servers`. Active-session servers that do not match any known local/runtime server are appended to the **Agent host** group and counted with the rest of the section, because they are the user's own configuration: they are created by this editor's "Add to Current Agent Session" flow, or written into the agent's config directly. Their section names their store; the meta line only repeats it when the row has nothing else to show.
 
 `Agent host` is deliberately not `Session`. Every other origin (`Workspace`, `User`, `Extension`, `Plugin`, `Built-in`) names *where a server is defined*; `Session` named a lifetime instead, so it answered a different question than the values beside it. It was also inaccurate: `addMcpServer` writes the agent host's **root config**, which outlives the session that reached it. Session scope is real, but it belongs to *enablement* -- `Disabled (Session)` -- not to where the server comes from.
 
