@@ -184,7 +184,7 @@ interface IMcpBuiltinItemEntry {
 
 export type AgentHostMcpServer = ReturnType<IAgentHostCustomizationService['getMcpServers']>[number];
 
-export function createBuiltinActiveSessionMcpEntries(servers: readonly AgentHostMcpServer[]): readonly IMcpSessionServerItemEntry[] {
+export function createActiveSessionMcpEntries(servers: readonly AgentHostMcpServer[]): readonly IMcpSessionServerItemEntry[] {
 	return servers.map(server => ({ type: 'session-server-item', server }));
 }
 
@@ -385,7 +385,10 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 			templateData.container.classList.remove('builtin');
 			templateData.container.classList.remove('has-detail');
 			templateData.name.textContent = formatDisplayName(element.server.name);
-			templateData.context = { origin: localize('originSession', "Session") };
+			// "Session" was wrong on two counts: it named a lifetime where every other origin
+			// names a store, and the store is not the session -- adding a server here writes the
+			// agent host's root config, which outlives the session that reached it.
+			templateData.context = { origin: localize('originAgentHost', "Agent host") };
 			this.updateActiveSessionStatus(templateData, element);
 			return;
 		}
@@ -1729,8 +1732,11 @@ export class McpListWidget extends Disposable {
 			const origin = getCollectionOriginLabel(server.collection.id, collectionSources.get(server.collection.id));
 			providedEntries.push(createBuiltinEntry(server, origin, activeSessionMatcher.take(getRuntimeServerMatchKeys(server))));
 		}
+		// Servers only the agent host knows about are still the user's own: they are added from
+		// this UI's "Add to Current Agent Session", or written into the agent's config by hand.
+		// Filing them under software the user installed said the opposite of what happened.
 		const activeSessionOnlyServers = activeSessionMatcher.unmatched(query);
-		providedEntries.push(...createBuiltinActiveSessionMcpEntries(activeSessionOnlyServers));
+		yourEntries.push(...createActiveSessionMcpEntries(activeSessionOnlyServers));
 
 		// Show empty state only when there are no servers at all (not when filtered to empty)
 		if (this.filteredServers.length === 0 && builtinServers.length === 0 && activeSessionOnlyServers.length === 0) {
@@ -1756,7 +1762,7 @@ export class McpListWidget extends Disposable {
 				id: 'yours',
 				label: localize('yourServersGroup', "Your Servers"),
 				icon: userIcon,
-				description: localize('yourServersGroupDescription', "Servers you configured. Each row shows whether it comes from this workspace or your user settings."),
+				description: localize('yourServersGroupDescription', "Servers you configured. Each row shows where it is defined: this workspace, your user settings, or the agent host."),
 				entries: yourEntries,
 			},
 			{

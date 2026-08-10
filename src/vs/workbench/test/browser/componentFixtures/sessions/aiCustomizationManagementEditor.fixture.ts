@@ -1623,6 +1623,19 @@ export default defineThemedFixtureGroup({ path: 'chat/aiCustomizations/' }, {
 		}),
 	}),
 
+	// Scrolled to the agent-host rows: servers the agent host defines sit with the user's own
+	// servers, because that is who configured them, and name their store like every other row.
+	McpServersTabActiveSessionScrolled: defineComponentFixture({
+		labels: { kind: 'screenshot' },
+		render: ctx => renderEditor(ctx, {
+			sessionResource: localSessionResource,
+			isSessionsWindow: true,
+			selectedSection: AICustomizationManagementSection.McpServers,
+			activeSessionMcpServers,
+			scrollToBottom: true,
+		}),
+	}),
+
 	// Agents tab — workspace and user agents, scrollable
 	AgentsTab: defineComponentFixture({
 		labels: { kind: 'screenshot' },
