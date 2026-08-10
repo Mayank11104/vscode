@@ -139,8 +139,12 @@ function mcpLifecycleNoop(): Promise<void> {
 	return Promise.resolve();
 }
 
-function createMockAgentHostCustomizationService(mcpServers: readonly FixtureAgentHostMcpServer[] = []): IAgentHostCustomizationService {
+function createMockAgentHostCustomizationService(mcpServers: readonly FixtureAgentHostMcpServer[] = [], durableEnablement: ReadonlyMap<string, ContributionEnablementState> = new Map()): IAgentHostCustomizationService {
 	return new class extends mock<IAgentHostCustomizationService>() {
+		override getMcpServerEnablement(_sessionResource: URI, serverName: string) {
+			return durableEnablement.get(serverName) ?? ContributionEnablementState.EnabledProfile;
+		}
+		override setMcpServerEnablement() { }
 		override readonly onDidChangeCustomAgents = Event.None;
 		override readonly onDidChangeCustomizations = Event.None;
 		override getCustomAgents() { return []; }
@@ -638,6 +642,8 @@ interface IRenderEditorOptions {
 	readonly height?: number;
 	readonly skillUIIntegrations?: ReadonlyMap<string, string>;
 	readonly activeSessionMcpServers?: readonly FixtureAgentHostMcpServer[];
+	/** Durable (profile/workspace) enablement per agent-host server name. */
+	readonly agentHostDurableEnablement?: ReadonlyMap<string, ContributionEnablementState>;
 	/** When true, simulates clicking the first list row to enter the embedded editor / detail view. */
 	readonly openFirstItem?: boolean;
 	readonly openItemLabel?: string;
@@ -813,7 +819,7 @@ async function renderEditor(ctx: ComponentFixtureContext, options: IRenderEditor
 				override getSkillUIIntegrations() { return skillUIIntegrations; }
 			}());
 			reg.defineInstance(ICustomizationHarnessService, harnessService);
-			reg.defineInstance(IAgentHostCustomizationService, createMockAgentHostCustomizationService(options.activeSessionMcpServers));
+			reg.defineInstance(IAgentHostCustomizationService, createMockAgentHostCustomizationService(options.activeSessionMcpServers, options.agentHostDurableEnablement));
 			// AICustomizationItemsModel is the single source of truth for items
 			// in the editor. Register the real implementation — it will resolve
 			// items via the mock prompts service / harness service above.
@@ -1620,6 +1626,24 @@ export default defineThemedFixtureGroup({ path: 'chat/aiCustomizations/' }, {
 			isSessionsWindow: true,
 			selectedSection: AICustomizationManagementSection.McpServers,
 			activeSessionMcpServers,
+		}),
+	}),
+
+	// An agent-host server disabled outright from the context menu. It must read as a plain
+	// "Disabled", not "Disabled (Session)": the row used to report the session flag as the
+	// reason whatever the user had actually chosen.
+	McpServersTabAgentHostDisabled: defineComponentFixture({
+		labels: { kind: 'screenshot' },
+		render: ctx => renderEditor(ctx, {
+			sessionResource: localSessionResource,
+			isSessionsWindow: true,
+			selectedSection: AICustomizationManagementSection.McpServers,
+			activeSessionMcpServers,
+			agentHostDurableEnablement: new Map([
+				['Remote Browser', ContributionEnablementState.DisabledProfile],
+				['Remote Search', ContributionEnablementState.DisabledWorkspace],
+			]),
+			scrollToBottom: true,
 		}),
 	}),
 

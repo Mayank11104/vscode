@@ -89,11 +89,30 @@ suite('mcpListWidget', () => {
 
 	test('turns active-session-only MCP servers into their own row entries', () => {
 		const server = createAgentHostServer({ name: 'node_repl' });
+		const [entry] = createActiveSessionMcpEntries([server]);
 
-		assert.deepStrictEqual(createActiveSessionMcpEntries([server]), [{
+		assert.deepStrictEqual({ type: entry.type, server: entry.server, enablement: entry.enablement }, {
 			type: 'session-server-item',
 			server,
-		}]);
+			enablement: undefined,
+		});
+	});
+
+	test('carries the durable choice, so a disabled row can say which layer disabled it', () => {
+		// The row used to read `server.enabled` alone, so a server disabled outright from the
+		// context menu still reported itself as disabled only for the session.
+		const writes: [string, ContributionEnablementState][] = [];
+		const server = createAgentHostServer({ name: 'node_repl' });
+		const [entry] = createActiveSessionMcpEntries([server], {
+			read: () => ContributionEnablementState.DisabledProfile,
+			write: (name, state) => { writes.push([name, state]); },
+		});
+		entry.setDurableEnabled?.(true);
+
+		assert.deepStrictEqual({ enablement: entry.enablement, writes }, {
+			enablement: ContributionEnablementState.DisabledProfile,
+			writes: [['node_repl', ContributionEnablementState.EnabledProfile]],
+		});
 	});
 
 	suite('getSessionEnablementAction', () => {
@@ -404,18 +423,43 @@ suite('mcpListWidget', () => {
 			});
 		});
 
-		test('a session-only row toggles the session', () => {
+		test('an agent-host row settles both of its layers, like every other row', () => {
 			const sessionCalls: boolean[] = [];
+			const durableCalls: boolean[] = [];
 			const entry = {
 				type: 'session-server-item',
 				server: createAgentHostServer({ enabled: true, setEnabled: (enabled: boolean) => { sessionCalls.push(enabled); } }),
+				setDurableEnabled: (enabled: boolean) => { durableCalls.push(enabled); },
 			} as unknown as Parameters<typeof getEnablementTarget>[0];
 			const target = getEnablementTarget(entry, createMcpService(ContributionEnablementState.EnabledProfile).service, undefined);
 			target?.setEnabled(false);
 
-			assert.deepStrictEqual({ scope: target?.scope, calls: sessionCalls }, {
-				scope: McpEnablementScope.Session,
-				calls: [false],
+			assert.deepStrictEqual({ scope: target?.scope, sessionCalls, durableCalls }, {
+				scope: McpEnablementScope.Global,
+				sessionCalls: [false],
+				durableCalls: [false],
+			});
+		});
+
+		test('an agent-host row disabled outright reads as off, and the switch can undo it', () => {
+			// Without the durable layer the switch wrote only the session, so a row the context
+			// menu had disabled could not be turned back on from the row it sat in.
+			const sessionCalls: boolean[] = [];
+			const durableCalls: boolean[] = [];
+			const entry = {
+				type: 'session-server-item',
+				server: createAgentHostServer({ enabled: true, setEnabled: (enabled: boolean) => { sessionCalls.push(enabled); } }),
+				enablement: ContributionEnablementState.DisabledProfile,
+				setDurableEnabled: (enabled: boolean) => { durableCalls.push(enabled); },
+			} as unknown as Parameters<typeof getEnablementTarget>[0];
+			const target = getEnablementTarget(entry, createMcpService(ContributionEnablementState.EnabledProfile).service, undefined);
+			const wasEnabled = target?.isEnabled();
+			target?.setEnabled(true);
+
+			assert.deepStrictEqual({ wasEnabled, sessionCalls, durableCalls }, {
+				wasEnabled: false,
+				sessionCalls: [true],
+				durableCalls: [true],
 			});
 		});
 	});

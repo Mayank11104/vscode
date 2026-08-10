@@ -178,6 +178,20 @@ interface IMcpServerItemEntry {
 interface IMcpSessionServerItemEntry {
 	readonly type: 'session-server-item';
 	readonly server: AgentHostMcpServer;
+	/**
+	 * The durable choice for this agent-host server. It has one: the context menu's Disable
+	 * writes it. Treating `server.enabled` as the only layer made every disabled agent-host row
+	 * claim it had been turned off for the session, whatever the user had actually chosen.
+	 */
+	readonly enablement?: ContributionEnablementState;
+	/** Writes the durable layer. Paired with `server.setEnabled` for the session layer. */
+	readonly setDurableEnabled?: (enabled: boolean) => void;
+}
+
+/** Reads and writes the durable enablement of servers belonging to an agent-host session. */
+export interface IAgentHostDurableEnablement {
+	read(serverName: string): ContributionEnablementState;
+	write(serverName: string, state: ContributionEnablementState): void;
 }
 
 /**
@@ -199,8 +213,15 @@ interface IMcpBuiltinItemEntry {
 
 export type AgentHostMcpServer = ReturnType<IAgentHostCustomizationService['getMcpServers']>[number];
 
-export function createActiveSessionMcpEntries(servers: readonly AgentHostMcpServer[]): readonly IMcpSessionServerItemEntry[] {
-	return servers.map(server => ({ type: 'session-server-item', server }));
+export function createActiveSessionMcpEntries(servers: readonly AgentHostMcpServer[], durable?: IAgentHostDurableEnablement): readonly IMcpSessionServerItemEntry[] {
+	return servers.map(server => ({
+		type: 'session-server-item',
+		server,
+		enablement: durable?.read(server.name),
+		setDurableEnabled: durable && (enabled => durable.write(server.name, enabled
+			? ContributionEnablementState.EnabledProfile
+			: ContributionEnablementState.DisabledProfile)),
+	}));
 }
 
 type IMcpListEntry = IMcpGroupHeaderEntry | IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry;
@@ -452,29 +473,26 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		const isGallery = element.type === 'server-item' && !element.server.local;
 		templateData.elementDisposables.add(autorun(reader => {
 			const enablement = element.localServer?.enablement.read(reader);
-			const localDisabled = enablement !== undefined ? isContributionDisabled(enablement) : false;
 			const activeSessionServer = element.activeSessionServer;
-			templateData.container.classList.toggle('disabled', localDisabled || activeSessionServer?.enabled === false);
 			const connectionState = element.localServer?.connectionState.read(reader);
 
 			// Status and error are resolved together, from whichever source won. Reading the
 			// error from the local runtime regardless meant a row could show the session's
 			// status beside an unrelated local failure -- or say "Failed" with nothing to read.
 			let status: McpStatusKind | undefined;
-			let statusScope: string | undefined;
 			let errorMessage: string | undefined;
-			if (localDisabled) {
+			const { disabled, scope: statusScope } = resolveMcpDisabledState(enablement, activeSessionServer?.enabled);
+			if (disabled) {
 				status = 'disabled';
-				statusScope = enablement !== undefined && isWorkspaceScopedEnablement(enablement) ? getStatusScopeNote(McpEnablementScope.Workspace) : undefined;
 			} else if (activeSessionServer) {
-				status = activeSessionServer.enabled ? activeSessionServer.status : 'disabled';
-				statusScope = activeSessionServer.enabled ? undefined : getStatusScopeNote(McpEnablementScope.Session);
-				errorMessage = activeSessionServer.enabled ? getAgentHostServerError(activeSessionServer) : undefined;
+				status = activeSessionServer.status;
+				errorMessage = getAgentHostServerError(activeSessionServer);
 			} else {
 				status = connectionState?.state ?? (isGallery ? undefined : McpConnectionState.Kind.Stopped);
 				errorMessage = connectionState?.state === McpConnectionState.Kind.Error ? connectionState.message : undefined;
 			}
 
+			templateData.container.classList.toggle('disabled', disabled);
 			this.updateStatus(templateData, element, {
 				status,
 				statusScope,
@@ -486,11 +504,12 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 	}
 
 	private updateActiveSessionStatus(templateData: IMcpServerItemTemplateData, element: IMcpSessionServerItemEntry): void {
-		const disabled = element.server.enabled === false;
+		const { disabled, scope } = resolveMcpDisabledState(element.enablement, element.server.enabled);
 		templateData.container.classList.toggle('disabled', disabled);
 		this.updateStatus(templateData, element, {
 			status: disabled ? 'disabled' : element.server.status,
-			statusScope: disabled ? getStatusScopeNote(McpEnablementScope.Session) : undefined,
+			statusScope: scope,
+			enablement: element.enablement,
 			errorMessage: disabled ? undefined : getAgentHostServerError(element.server),
 		});
 	}
@@ -795,6 +814,29 @@ function shouldShowStatusOnRow(state: McpStatusKind | undefined, statusScope: st
 	return isNoteworthyMcpStatus(state);
 }
 
+/**
+ * Resolves whether a server is off and which layer holds it there.
+ *
+ * Durable outranks session: if the user disabled a server outright, saying "(Session)" would
+ * describe their choice as narrower than it was. The scope note only appears when the layer is
+ * genuinely narrower than everywhere -- a workspace choice, or a session-only one.
+ *
+ * Shared by the row, the accessible name, and the switch so they cannot disagree about which
+ * layer a "Disabled" refers to. Three copies of this rule previously did, and two were wrong.
+ */
+function resolveMcpDisabledState(enablement: ContributionEnablementState | undefined, sessionEnabled: boolean | undefined): { readonly disabled: boolean; readonly scope: string | undefined } {
+	if (enablement !== undefined && isContributionDisabled(enablement)) {
+		return {
+			disabled: true,
+			scope: isWorkspaceScopedEnablement(enablement) ? getStatusScopeNote(McpEnablementScope.Workspace) : undefined,
+		};
+	}
+	if (sessionEnabled === false) {
+		return { disabled: true, scope: getStatusScopeNote(McpEnablementScope.Session) };
+	}
+	return { disabled: false, scope: undefined };
+}
+
 function getActiveSessionServer(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry): AgentHostMcpServer | undefined {
 	return entry.type === 'session-server-item' ? entry.server : entry.activeSessionServer;
 }
@@ -832,13 +874,14 @@ function getMcpEntryLabel(element: IMcpServerItemEntry | IMcpSessionServerItemEn
  */
 function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, reader?: IReader): McpStatusKind | undefined {
 	if (entry.type === 'session-server-item') {
-		return entry.server.enabled ? entry.server.status : 'disabled';
+		return resolveMcpDisabledState(entry.enablement, entry.server.enabled).disabled ? 'disabled' : entry.server.status;
 	}
-	if (entry.localServer && isContributionDisabled(entry.localServer.enablement.read(reader))) {
+	const enablement = entry.localServer?.enablement.read(reader);
+	if (resolveMcpDisabledState(enablement, entry.activeSessionServer?.enabled).disabled) {
 		return 'disabled';
 	}
 	if (entry.activeSessionServer) {
-		return entry.activeSessionServer.enabled ? entry.activeSessionServer.status : 'disabled';
+		return entry.activeSessionServer.status;
 	}
 	// Gallery rows are the one kind with no status: nothing is installed to have one yet.
 	const isGallery = entry.type === 'server-item' && !entry.server.local;
@@ -848,16 +891,9 @@ function getMcpStatusKind(entry: IMcpServerItemEntry | IMcpSessionServerItemEntr
 /** The layer holding a row off, so "Off" is not ambiguous when it is only spoken. */
 function getMcpStatusScopeNote(entry: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, reader?: IReader): string | undefined {
 	if (entry.type === 'session-server-item') {
-		return entry.server.enabled ? undefined : getStatusScopeNote(McpEnablementScope.Session);
+		return resolveMcpDisabledState(entry.enablement, entry.server.enabled).scope;
 	}
-	const enablement = entry.localServer?.enablement.read(reader);
-	if (enablement !== undefined && isContributionDisabled(enablement)) {
-		return isWorkspaceScopedEnablement(enablement) ? getStatusScopeNote(McpEnablementScope.Workspace) : undefined;
-	}
-	if (entry.activeSessionServer && !entry.activeSessionServer.enabled) {
-		return getStatusScopeNote(McpEnablementScope.Session);
-	}
-	return undefined;
+	return resolveMcpDisabledState(entry.localServer?.enablement.read(reader), entry.activeSessionServer?.enabled).scope;
 }
 
 /**
@@ -1162,10 +1198,18 @@ export interface IMcpEnablementTarget {
 export function getEnablementTarget(element: IMcpServerItemEntry | IMcpSessionServerItemEntry | IMcpBuiltinItemEntry, mcpService: IMcpService, enablement: ContributionEnablementState | undefined): IMcpEnablementTarget | undefined {
 	if (element.type === 'session-server-item') {
 		const server = element.server;
+		const setDurableEnabled = element.setDurableEnabled;
 		return {
-			scope: McpEnablementScope.Session,
-			isEnabled: () => server.enabled !== false,
-			setEnabled: enabled => server.setEnabled(enabled),
+			// Global like every other row. These servers were previously treated as an exception
+			// on the grounds that the session was the only layer they had, which was simply untrue
+			// -- the context menu has always written a durable choice for them. Left as-is, the
+			// switch could not undo what that menu item did.
+			scope: McpEnablementScope.Global,
+			isEnabled: () => !resolveMcpDisabledState(element.enablement, server.enabled).disabled,
+			setEnabled: enabled => {
+				setDurableEnabled?.(enabled);
+				server.setEnabled(enabled);
+			},
 		};
 	}
 
@@ -1774,7 +1818,10 @@ export class McpListWidget extends Disposable {
 		// Servers only the agent host knows about are still the user's own: they are added from
 		// this UI's "Add to Current Agent Session", or written into the agent's config by hand.
 		const activeSessionOnlyServers = activeSessionMatcher.unmatched(query);
-		agentHostEntries.push(...createActiveSessionMcpEntries(activeSessionOnlyServers));
+		agentHostEntries.push(...createActiveSessionMcpEntries(activeSessionOnlyServers, {
+			read: name => this.agentHostCustomizationService.getMcpServerEnablement(activeSessionResource, name),
+			write: (name, state) => this.agentHostCustomizationService.setMcpServerEnablement(activeSessionResource, name, state),
+		}));
 
 		// Show empty state only when there are no servers at all (not when filtered to empty)
 		if (this.filteredServers.length === 0 && builtinServers.length === 0 && activeSessionOnlyServers.length === 0) {
