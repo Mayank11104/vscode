@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CopilotClient, RuntimeConnection, type CopilotClientOptions, type GitHubTelemetryNotification, type ManagedSettingsResolvedData, type SessionMode as CopilotSdkMode } from '@github/copilot-sdk';
+import { CopilotClient, RuntimeConnection, type CopilotClientOptions, type GitHubTelemetryNotification, type ManagedSettingsResolvedData, type SessionConfig, type SessionMode as CopilotSdkMode } from '@github/copilot-sdk';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { pathToFileURL } from 'url';
@@ -37,7 +37,7 @@ import { IAgentHostReviewService } from '../../common/agentHostReviewService.js'
 import { createPricingMetaFromBilling, hasLongContextSurcharge, normalizeCAPIBilling, type ICAPIModelBilling } from '../../common/agentModelPricing.js';
 import { createAgentModelByokMeta } from '../../common/agentModelByokMeta.js';
 import { AgentHostConfigKey, agentHostCustomizationConfigSchema, DEFAULT_SESSION_CUSTOMIZATION_DISCOVERY_MODE, toContainerCustomization } from '../../common/agentHostCustomizationConfig.js';
-import { CopilotCliConfigKey, CopilotCliVSCodeAssignmentContextKey, copilotCliConfigSchema, type CopilotSdkLogLevelSetting } from '../../common/copilotCliConfig.js';
+import { CopilotCliConfigKey, CopilotCliVSCodeAssignmentContextKey, applyModelFamilyAlias, copilotCliConfigSchema, type CopilotSdkLogLevelSetting } from '../../common/copilotCliConfig.js';
 import { AgentHostMcpServersConfigKey, AgentHostCopilotMultiRootEnabledConfigKey, AgentHostPreferLongContextEnabledConfigKey, AgentHostSessionSyncEnabledConfigKey, AgentHostSystemProxyEnabledConfigKey, AgentHostMigrateLegacyCopilotCliEnabledConfigKey, AutoApproveLevel, SessionMode, migrateLegacyAutopilotConfig, platformRootSchema, platformSessionSchema, type AgentHostMcpServers } from '../../common/agentHostSchema.js';
 import { IAgentPluginManager, ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { AgentSessionEntry, decodeProviderData, encodeProviderData, prepareSideChatPrompt, stripSideChatContext, type IPersistedChat } from '../agentPeerChats.js';
@@ -73,7 +73,7 @@ import { createCopilotCliEnvironment } from './copilotCliEnvironment.js';
 import { ICopilotSessionContext, projectFromCopilotContext } from './copilotGitProject.js';
 import { parsedPluginsEqual, toChildCustomizations } from './copilotPluginConverters.js';
 import { CopilotGitHubTelemetryForwarder } from './copilotGitHubTelemetryForwarder.js';
-import { CopilotSessionLauncher, ContextSizeConfigKey, ThinkingLevelConfigKey, getCopilotContextTier, isCopilotReasoningEffort, resolveCopilotReasoningEffort, type CopilotSessionLaunchPlan, type IActiveClientSnapshot } from './copilotSessionLauncher.js';
+import { CopilotSessionLauncher, ContextSizeConfigKey, ThinkingLevelConfigKey, getCopilotContextTier, isCopilotReasoningEffort, resolveConfiguredReasoningEffortOverride, resolveCopilotReasoningEffort, type CopilotSessionLaunchPlan, type IActiveClientSnapshot } from './copilotSessionLauncher.js';
 import { ShellManager } from './copilotShellTools.js';
 import { isAgentHostTelemetryService } from '../agentHostTelemetryService.js';
 import { ICopilotApiService, type IRestrictedTelemetryContext } from '../shared/copilotApiService.js';
@@ -849,15 +849,13 @@ export class CopilotAgent extends Disposable implements IAgent {
 	 * idle and otherwise parking it until the last in-flight turn ends.
 	 *
 	 * Restarting tears the SDK sessions down, and a torn-down session stops
-	 * producing the events that finalize its protocol turn — the client would
-	 * be left with a turn that never completes, cancels, or errors, i.e. a
-	 * session that spins forever. Startup-only values (session sync, the SDK
-	 * log level, the enterprise host, and the system proxy)
-	 * can also change without any user action, from an experiment or policy
-	 * refresh, so this must never be paid for with a running turn. The values are
-	 * read fresh by
-	 * {@link _ensureClient} on the next start, so applying the restart late is
-	 * always correct.
+	 * producing the events that finalize its protocol turn — the client would be
+	 * left with a turn that never completes, cancels, or errors, i.e. a session
+	 * that spins forever. Startup-only values (session sync, the SDK log level,
+	 * the enterprise host, the system proxy) can also change without any user
+	 * action, from an experiment or policy refresh, so this must never be paid
+	 * for with a running turn. {@link _ensureClient} reads them fresh on the next
+	 * start, so applying the restart late is always correct.
 	 */
 	private async _requestClientRestart(reason: string): Promise<void> {
 		if (this._shutdownPromise || !this._client) {
@@ -1558,8 +1556,8 @@ export class CopilotAgent extends Disposable implements IAgent {
 			// Build a clean env for the CLI subprocess, stripping Electron/VS Code vars
 			// that can interfere with the Node.js process the SDK spawns.
 			const env = createCopilotCliEnvironment();
-			// Model-family aliases are session-scoped through SessionConfig.model.
-			// Never let an ambient process-wide fallback override other sessions.
+			// Family aliases are session-scoped through SessionConfig.model; an
+			// ambient process-wide value would leak across every session.
 			delete env['COPILOT_MODEL_FAMILY'];
 			await this._configureProxyEnv(env);
 
@@ -3542,15 +3540,30 @@ export class CopilotAgent extends Disposable implements IAgent {
 		}
 	}
 
+	/**
+	 * Mirrors how `CopilotSessionLauncher` resolves these at create: a `family`
+	 * alias is the model id the runtime sees, and an aliased session drops the
+	 * picker's tuning in favour of that family's defaults. Resolved at the point
+	 * of use so the provisional-session path doesn't log it prematurely.
+	 */
+	private _resolveModelChange(model: ModelSelection, sessionId: string): { modelId: string; reasoningEffort: SessionConfig['reasoningEffort']; contextTier: SessionConfig['contextTier'] } {
+		const modelId = applyModelFamilyAlias(model, this._configurationService.getRootValue(copilotCliConfigSchema, CopilotCliConfigKey.ModelCapabilityOverrides))?.id ?? model.id;
+		if (modelId !== model.id) {
+			this._logService.info(`[Copilot:${sessionId}] Model capability override: changing model to '${model.id}' as family '${modelId}'`);
+			return { modelId, reasoningEffort: resolveConfiguredReasoningEffortOverride(model, this._configurationService, this._logService, sessionId), contextTier: undefined };
+		}
+		return {
+			modelId,
+			reasoningEffort: resolveCopilotReasoningEffort(model, this._configurationService, this._logService, sessionId),
+			contextTier: getCopilotContextTier(model, this._longContextWindowFor(model.id), this._isFreeLongContext(model.id)),
+		};
+	}
+
 	private async _changeModelOnce(chat: URI, model: ModelSelection): Promise<void> {
-		const longContextWindow = this._longContextWindowFor(model.id);
-		const freeLongContext = this._isFreeLongContext(model.id);
 		const context = this._getChatContext(chat);
-		// Same override the launcher applies at create (validated + logged by
-		// resolveCopilotReasoningEffort); computed at the point of use so the
-		// provisional-session path doesn't resolve or log it prematurely.
 		if (context.isPeerChat) {
-			await context.target?.setModel(model.id, resolveCopilotReasoningEffort(model, this._configurationService, this._logService, context.sessionId), getCopilotContextTier(model, longContextWindow, freeLongContext));
+			const { modelId, reasoningEffort, contextTier } = this._resolveModelChange(model, context.sessionId);
+			await context.target?.setModel(modelId, reasoningEffort, contextTier);
 			const backing = this._chatBackings.get(context.chatKey);
 			if (backing) {
 				const updated: IPersistedChat = { ...backing, model };
@@ -3566,8 +3579,10 @@ export class CopilotAgent extends Disposable implements IAgent {
 		}
 		const entry = context.target;
 		if (entry) {
-			await entry.setModel(model.id, resolveCopilotReasoningEffort(model, this._configurationService, this._logService, context.sessionId), getCopilotContextTier(model, longContextWindow, freeLongContext));
+			const { modelId, reasoningEffort, contextTier } = this._resolveModelChange(model, context.sessionId);
+			await entry.setModel(modelId, reasoningEffort, contextTier);
 		}
+		// Stores the un-aliased selection, so the alias is re-resolved on relaunch.
 		await this._storeSessionMetadata(context.session, model, undefined, undefined, undefined, undefined);
 	}
 
