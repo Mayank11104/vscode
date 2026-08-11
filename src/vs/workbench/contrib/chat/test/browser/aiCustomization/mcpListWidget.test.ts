@@ -15,7 +15,7 @@ import { McpServerStatus } from '../../../../../../platform/agentHost/common/sta
 import { ContributionEnablementState } from '../../../common/enablement.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IAgentHostCustomizationService } from '../../../browser/agentSessions/agentHost/agentHostCustomizationService.js';
-import { IMcpService, McpConnectionState } from '../../../../mcp/common/mcpTypes.js';
+import { IMcpService, McpConnectionState, McpServerCacheState } from '../../../../mcp/common/mcpTypes.js';
 import {
 	AgentHostMcpServer,
 	authenticateMcpServer,
@@ -28,6 +28,8 @@ import {
 	getSessionEnablementAction,
 	getEnablementTarget,
 	countSessionOnlyMcpServers,
+	hasKnownMcpTools,
+	areMcpToolsFromCache,
 	McpEnablementScope,
 	registerMcpInlineButtonAction,
 } from '../../../browser/aiCustomization/mcpListWidget.js';
@@ -288,6 +290,22 @@ suite('mcpListWidget', () => {
 				shownChannels: [],
 				localOutputCount: 1,
 			});
+		});
+	});
+
+	suite('tool cache state', () => {
+		// The two refreshing states are easy to miss because their names read like the states
+		// they refresh *from*, and getting them wrong is invisible until a server is mid-refresh.
+		test('a first refresh is not a known empty result', () => {
+			assert.deepStrictEqual(
+				[McpServerCacheState.Unknown, McpServerCacheState.RefreshingFromUnknown, McpServerCacheState.Cached, McpServerCacheState.Live].map(hasKnownMcpTools),
+				[false, false, true, true]);
+		});
+
+		test('a refresh over cached tools is still showing cached tools', () => {
+			assert.deepStrictEqual(
+				[McpServerCacheState.Cached, McpServerCacheState.Outdated, McpServerCacheState.RefreshingFromCached, McpServerCacheState.Live].map(areMcpToolsFromCache),
+				[true, true, true, false]);
 		});
 	});
 

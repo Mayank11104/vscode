@@ -108,6 +108,31 @@ function getScopeOriginLabel(scope: LocalMcpServerScope | undefined): string | u
  * stopped: {@link McpServerCacheState.Cached} means we know what it offers from its last run,
  * which is exactly what someone deciding whether to enable it wants to see.
  */
+/**
+ * Whether a cache state means "we know what tools this server has".
+ *
+ * `RefreshingFromUnknown` is a first refresh in flight: no tools have ever been read, so an
+ * empty list means "not yet", not "none". Treating it as a known result reported a server as
+ * offering no tools while its very first request was still outstanding.
+ */
+export function hasKnownMcpTools(cacheState: McpServerCacheState | undefined): boolean {
+	return cacheState !== undefined
+		&& cacheState !== McpServerCacheState.Unknown
+		&& cacheState !== McpServerCacheState.RefreshingFromUnknown;
+}
+
+/**
+ * Whether the tools currently shown came from the cache rather than a live connection.
+ *
+ * `RefreshingFromCached` is a refresh over cached tools: what is on screen is still the cached
+ * set until the refresh lands, so it keeps the same "from the last time this ran" caveat.
+ */
+export function areMcpToolsFromCache(cacheState: McpServerCacheState | undefined): boolean {
+	return cacheState === McpServerCacheState.Cached
+		|| cacheState === McpServerCacheState.Outdated
+		|| cacheState === McpServerCacheState.RefreshingFromCached;
+}
+
 function readServerFacts(server: IMcpServer | undefined, reader: IReader): { toolCount?: number; toolsFromCache?: boolean; transport?: string } {
 	if (!server) {
 		return {};
@@ -115,7 +140,7 @@ function readServerFacts(server: IMcpServer | undefined, reader: IReader): { too
 
 	const cacheState = server.cacheState.read(reader);
 	const tools = server.tools.read(reader);
-	const toolsFromCache = cacheState === McpServerCacheState.Cached || cacheState === McpServerCacheState.Outdated;
+	const toolsFromCache = areMcpToolsFromCache(cacheState);
 
 	const launch = server.readDefinitions().read(reader).server?.launch;
 	const transport = launch?.type === McpServerTransportType.HTTP
@@ -125,18 +150,12 @@ function readServerFacts(server: IMcpServer | undefined, reader: IReader): { too
 			: undefined;
 
 	return {
-		toolCount: cacheState === McpServerCacheState.Unknown ? undefined : tools.length,
+		toolCount: hasKnownMcpTools(cacheState) ? tools.length : undefined,
 		toolsFromCache,
 		transport,
 	};
 }
 
-/**
- * The two groups the list is organised into. The split is a single axis: whether the user owns
- * the configuration. "Yours" can be edited and removed; "Provided" can only be turned off.
- * Finer provenance (Workspace/User/Extension/Plugin/Built-in) lives on each row's meta line,
- * so collapsing the old five groups loses no information.
- */
 /**
  * Sections answer one question -- *where is this server defined?* -- ordered from the user's own
  * choices outwards to the product's. An earlier version collapsed these to "yours" and "provided"
@@ -824,7 +843,7 @@ function shouldShowStatusOnRow(state: McpStatusKind | undefined, statusScope: st
  * Shared by the row, the accessible name, and the switch so they cannot disagree about which
  * layer a "Disabled" refers to. Three copies of this rule previously did, and two were wrong.
  */
-function resolveMcpDisabledState(enablement: ContributionEnablementState | undefined, sessionEnabled: boolean | undefined): { readonly disabled: boolean; readonly scope: string | undefined } {
+export function resolveMcpDisabledState(enablement: ContributionEnablementState | undefined, sessionEnabled: boolean | undefined): { readonly disabled: boolean; readonly scope: string | undefined } {
 	if (enablement !== undefined && isContributionDisabled(enablement)) {
 		return {
 			disabled: true,
@@ -927,7 +946,7 @@ export function getMcpEntryAriaLabel(element: IMcpListEntry, reader?: IReader): 
 }
 
 /** Joins the status word to the layer holding it, e.g. "Off (Workspace)". */
-function formatMcpStatusWithScope(label: string, scope: string | undefined): string {
+export function formatMcpStatusWithScope(label: string, scope: string | undefined): string {
 	return scope ? localize('mcpStatusWithScope', "{0} ({1})", label, scope) : label;
 }
 
@@ -954,7 +973,7 @@ export function countSessionOnlyMcpServers(
 	return matcher.unmatched('').length;
 }
 
-class ActiveSessionMcpServerMatcher {
+export class ActiveSessionMcpServerMatcher {
 	private readonly byKey = new Map<string, AgentHostMcpServer[]>();
 	private readonly matchedIds = new Set<string>();
 

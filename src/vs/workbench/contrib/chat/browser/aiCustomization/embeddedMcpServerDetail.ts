@@ -10,10 +10,12 @@ import { autorun, IReader } from '../../../../../base/common/observable.js';
 import { localize } from '../../../../../nls.js';
 import { LocalMcpServerScope } from '../../../../services/mcp/common/mcpWorkbenchManagementService.js';
 import { McpServerType } from '../../../../../platform/mcp/common/mcpPlatformTypes.js';
-import { IMcpServer, IMcpService, IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState, McpServerCacheState } from '../../../mcp/common/mcpTypes.js';
+import { IMcpServer, IMcpService, IMcpWorkbenchService, IWorkbenchMcpServer, McpConnectionState } from '../../../mcp/common/mcpTypes.js';
 import { isContributionDisabled } from '../../common/enablement.js';
-import { getMcpStatusPresentation, isNoteworthyMcpStatus } from './mcpListWidget.js';
-import { findRuntimeMcpServer } from './mcpServerIdentity.js';
+import { ActiveSessionMcpServerMatcher, AgentHostMcpServer, areMcpToolsFromCache, formatMcpStatusWithScope, getMcpStatusPresentation, hasKnownMcpTools, isNoteworthyMcpStatus, resolveMcpDisabledState } from './mcpListWidget.js';
+import { IAgentHostCustomizationService } from '../agentSessions/agentHost/agentHostCustomizationService.js';
+import { ICustomizationHarnessService } from '../../common/customizationHarnessService.js';
+import { findRuntimeMcpServer, getWorkbenchServerMatchKeys } from './mcpServerIdentity.js';
 
 const $ = DOM.$;
 
@@ -61,6 +63,8 @@ export class EmbeddedMcpServerDetail extends Disposable {
 		parent: HTMLElement,
 		@IMcpWorkbenchService private readonly mcpWorkbenchService: IMcpWorkbenchService,
 		@IMcpService private readonly mcpService: IMcpService,
+		@IAgentHostCustomizationService private readonly agentHostCustomizationService: IAgentHostCustomizationService,
+		@ICustomizationHarnessService private readonly customizationHarnessService: ICustomizationHarnessService,
 	) {
 		super();
 
@@ -184,28 +188,38 @@ export class EmbeddedMcpServerDetail extends Disposable {
 
 		this.liveRender.value = autorun(reader => {
 			const runtime = findRuntimeMcpServer(this.mcpService.servers.read(reader), server);
-			this.renderStatus(server, runtime, reader);
+			// The row prefers the active session's view of a server, so this pane has to as well
+			// or the two disagree about the same server -- the pane reporting Idle for something
+			// the session shows as failed, or losing the layer that turned it off.
+			const sessionResource = this.customizationHarnessService.activeSessionResource.read(reader);
+			const sessionServer = new ActiveSessionMcpServerMatcher(this.agentHostCustomizationService.getMcpServers(sessionResource))
+				.take(getWorkbenchServerMatchKeys(server));
+			this.renderStatus(server, runtime, sessionServer, reader);
 			this.renderTools(runtime, reader);
 		});
 	}
 
-	private renderStatus(server: IWorkbenchMcpServer, runtime: IMcpServer | undefined, reader: IReader): void {
-		// Mirrors how the list row resolves status, so the two never disagree: a durable
-		// "off" outranks whatever the connection happens to be doing.
+	private renderStatus(server: IWorkbenchMcpServer, runtime: IMcpServer | undefined, sessionServer: AgentHostMcpServer | undefined, reader: IReader): void {
+		// Resolved through the same helper the row uses, rather than a second copy of the rule:
+		// durable off outranks a session off, and the layer is named when it is narrower than
+		// everywhere. Two copies of this had already drifted apart once.
 		const enablement = runtime?.enablement.read(reader);
-		const kind = enablement !== undefined && isContributionDisabled(enablement)
+		const { disabled, scope: enablementScope } = resolveMcpDisabledState(enablement, sessionServer?.enabled);
+		const kind = disabled
 			? 'disabled' as const
-			// An installed server with no runtime counterpart is idle, not statusless. The row
-			// says so; without the same fallback the pane went blank for exactly the servers the
-			// conservative runtime matching declines to match.
-			: runtime?.connectionState.read(reader).state ?? McpConnectionState.Kind.Stopped;
+			: sessionServer
+				? sessionServer.status
+				// An installed server with no runtime counterpart is idle, not statusless. The row
+				// says so; without the same fallback the pane went blank for exactly the servers the
+				// conservative runtime matching declines to match.
+				: runtime?.connectionState.read(reader).state ?? McpConnectionState.Kind.Stopped;
 		// This pane has no switch, so "Off" is worth saying here. Running and Idle still are not:
 		// whether a lazily-started server happens to hold a process right now is not why anyone
 		// opened this pane, and the Tools section below already says whether it has ever run.
 		const presentation = isNoteworthyMcpStatus(kind) ? getMcpStatusPresentation(kind) : undefined;
 
 		this.statusEl.className = presentation ? `mcp-server-status ${presentation.className}` : 'mcp-server-status';
-		this.statusEl.textContent = presentation?.label ?? '';
+		this.statusEl.textContent = presentation ? formatMcpStatusWithScope(presentation.label, enablementScope) : '';
 		this.statusEl.style.display = presentation ? '' : 'none';
 
 		const scope = describeMcpScope(server.local?.scope);
@@ -270,7 +284,7 @@ export class EmbeddedMcpServerDetail extends Disposable {
 		const cacheState = runtime?.cacheState.read(reader);
 		const tools = runtime?.tools.read(reader) ?? [];
 
-		if (!runtime || cacheState === McpServerCacheState.Unknown) {
+		if (!runtime || !hasKnownMcpTools(cacheState)) {
 			// Tools are only known once a server has run at least once. Saying so is more
 			// useful than an empty list, which reads as "this server offers nothing" -- but
 			// only a server that is actually off should be told to turn on, or the pane asks
@@ -293,7 +307,7 @@ export class EmbeddedMcpServerDetail extends Disposable {
 			return;
 		}
 
-		this.setToolsMessage(cacheState === McpServerCacheState.Cached || cacheState === McpServerCacheState.Outdated
+		this.setToolsMessage(areMcpToolsFromCache(cacheState)
 			? localize('mcpDetailToolsCached', "From the last time this server ran.")
 			: undefined);
 

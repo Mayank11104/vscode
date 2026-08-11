@@ -1467,6 +1467,10 @@ function renderEmbeddedMcpDetail(ctx: ComponentFixtureContext, server: IWorkbenc
 				override readonly servers = constObservable((runtime ? [runtime] : []) as never[]);
 				override readonly enablementModel = mcpEnablementModel;
 			}());
+			// The pane prefers the active session's view of a server, like the row does, so it
+			// needs both the session it should ask about and something to ask.
+			reg.defineInstance(ICustomizationHarnessService, createMockHarnessService(localSessionResource, []));
+			reg.defineInstance(IAgentHostCustomizationService, createMockAgentHostCustomizationService());
 		},
 	});
 
