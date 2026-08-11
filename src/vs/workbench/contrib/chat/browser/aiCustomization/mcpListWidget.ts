@@ -539,11 +539,17 @@ class McpServerItemRenderer implements IListRenderer<IMcpServerItemEntry | IMcpS
 		// rebuild here made "Show Output" unclickable on precisely the rows that need it: an
 		// erroring server re-runs this autorun about twice a second while rendering the exact
 		// same thing every time. Only touch the DOM when something visible actually moved.
+		// The signature has to cover everything this method renders, including the static
+		// context, because renderMetaLine draws from it. Leaving it out meant an edit to a
+		// server's description or origin was dropped whenever its runtime state happened to be
+		// unchanged: the row was reused, the new context was stored, and the early return
+		// below kept the old text on screen.
 		const activeSessionServer = getActiveSessionServer(element);
 		const signature = JSON.stringify([
 			rowState.status, rowState.statusScope, rowState.errorMessage, rowState.enablement,
 			rowState.toolCount, rowState.toolsFromCache, rowState.transport,
 			activeSessionServer?.id, activeSessionServer?.enabled, activeSessionServer?.status,
+			templateData.context.origin, templateData.context.impliedOrigin, templateData.context.description,
 		]);
 		if (templateData.renderedSignature === signature) {
 			return;
