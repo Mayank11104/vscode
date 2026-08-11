@@ -24,6 +24,7 @@ import { generateUuid } from '../../../../../base/common/uuid.js';
 import { OffsetRange } from '../../../../../editor/common/core/ranges/offsetRange.js';
 import { localize } from '../../../../../nls.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IDefaultAccountService } from '../../../../../platform/defaultAccount/common/defaultAccount.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { Progress } from '../../../../../platform/progress/common/progress.js';
@@ -63,6 +64,7 @@ import { findLast } from '../../../../../base/common/arraysFind.js';
 import { ChatMode } from '../chatModes.js';
 
 const serializedChatKey = 'interactive.sessions';
+const managedSettingsUpdateRequiredReason = 'Managed settings require a VS Code update';
 
 /**
  * True when the user has typed text or attached non-trivial context to the input
@@ -256,6 +258,7 @@ export class ChatService extends Disposable implements IChatService {
 		@IMcpService private readonly mcpService: IMcpService,
 		@IPromptsService private readonly promptsService: IPromptsService,
 		@IChatEntitlementService private readonly chatEntitlementService: IChatEntitlementService,
+		@IDefaultAccountService private readonly defaultAccountService: IDefaultAccountService,
 		@ILanguageModelsService private readonly languageModelsService: ILanguageModelsService,
 		@IChatDebugService private readonly chatDebugService: IChatDebugService,
 	) {
@@ -311,6 +314,15 @@ export class ChatService extends Disposable implements IChatService {
 			const models = this._sessionModels.observable.read(reader).values();
 			return Iterable.some(models, model => model.requestInProgress.read(reader));
 		});
+
+		this._register(this.defaultAccountService.onDidChangeManagedSettingsCompatibilityError(error => {
+			if (error) {
+				this.rejectQueuedRequestsForManagedSettingsUpdate();
+			}
+		}));
+		if (this.defaultAccountService.managedSettingsCompatibilityError) {
+			this.rejectQueuedRequestsForManagedSettingsUpdate();
+		}
 	}
 
 	public get editingSessions() {
@@ -1060,6 +1072,10 @@ export class ChatService extends Disposable implements IChatService {
 	}
 
 	async resendRequest(request: IChatRequestModel, options?: IChatSendRequestOptions): Promise<void> {
+		if (await this.isManagedSettingsUpdateRequired()) {
+			throw new Error(managedSettingsUpdateRequiredReason);
+		}
+
 		const model = this._sessionModels.get(request.session.sessionResource);
 		if (!model && model !== request.session) {
 			throw new Error(`Unknown session: ${request.session.sessionResource}`);
@@ -1128,6 +1144,10 @@ export class ChatService extends Disposable implements IChatService {
 		if (!request.trim() && !hasExplicitFileOrImageAttachment && !options?.slashCommand && !options?.agentId && !options?.agentIdSilent) {
 			this.trace('sendRequest', 'Rejected empty message');
 			return { kind: 'rejected', reason: 'Empty message' };
+		}
+
+		if (await this.isManagedSettingsUpdateRequired()) {
+			return { kind: 'rejected', reason: managedSettingsUpdateRequiredReason };
 		}
 
 		let newSessionResource: URI | undefined;
@@ -1853,6 +1873,11 @@ export class ChatService extends Disposable implements IChatService {
 	 * Multiple consecutive steering requests are combined into a single request.
 	 */
 	private processNextPendingRequest(model: ChatModel): void {
+		if (this.defaultAccountService.managedSettingsCompatibilityError) {
+			this.rejectQueuedRequestsForManagedSettingsUpdate(model);
+			return;
+		}
+
 		// Agent host sessions delegate queue management to the server.
 		// The server dispatches ChatTurnStarted with queuedMessageId when
 		// it consumes a queued message, so the client should not dequeue eagerly.
@@ -1952,6 +1977,31 @@ export class ChatService extends Disposable implements IChatService {
 		};
 		for (const deferred of deferreds) {
 			deferred.complete(result);
+		}
+	}
+
+	private async isManagedSettingsUpdateRequired(): Promise<boolean> {
+		await this.defaultAccountService.getDefaultAccount();
+		return this.defaultAccountService.managedSettingsCompatibilityError !== null;
+	}
+
+	private rejectQueuedRequestsForManagedSettingsUpdate(targetModel?: ChatModel): void {
+		const models = targetModel ? [targetModel] : this._sessionModels.values();
+		for (const model of models) {
+			const pendingRequests = [...model.getPendingRequests()];
+			if (pendingRequests.length === 0) {
+				continue;
+			}
+
+			model.clearPendingRequests();
+			this._pendingRequests.get(model.sessionResource)?.resetYieldRequested();
+			for (const pending of pendingRequests) {
+				const deferred = this._queuedRequestDeferreds.get(pending.request.id);
+				if (deferred) {
+					deferred.complete({ kind: 'rejected', reason: managedSettingsUpdateRequiredReason });
+					this._queuedRequestDeferreds.delete(pending.request.id);
+				}
+			}
 		}
 	}
 
@@ -2197,6 +2247,10 @@ export class ChatService extends Disposable implements IChatService {
 	syncPendingRequestsFromRemote(sessionResource: URI, requests: readonly IRemotePendingRequest[]): void {
 		const model = this._sessionModels.get(sessionResource) as ChatModel | undefined;
 		if (!model) {
+			return;
+		}
+		if (this.defaultAccountService.managedSettingsCompatibilityError) {
+			this.rejectQueuedRequestsForManagedSettingsUpdate(model);
 			return;
 		}
 

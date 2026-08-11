@@ -38,9 +38,15 @@ export class SessionsPolicyBlockedContribution extends Disposable implements IWo
 		}));
 
 		this._register(this.gateService.onDidChangeGateInfo(() => this.update()));
+		this._register(this.defaultAccountService.onDidChangeManagedSettingsCompatibilityError(() => this.update()));
 	}
 
 	private update(): void {
+		if (this.defaultAccountService.managedSettingsCompatibilityError) {
+			this.showOverlay({ reason: SessionsBlockedReason.ManagedSettingsUpdateRequired });
+			return;
+		}
+
 		const gateInfo = this.gateService.gateInfo;
 
 		// The gate forces chat.agent.enabled = false via restrictedValue when stably
@@ -83,7 +89,8 @@ export class SessionsPolicyBlockedContribution extends Disposable implements IWo
 
 	private showOverlay(options: ISessionsBlockedOverlayOptions): void {
 		// AccountPolicyGate may need re-render when the account name changes.
-		if (this.currentReason === options.reason && options.reason !== SessionsBlockedReason.AccountPolicyGate) {
+		if (this.currentReason === options.reason
+			&& options.reason !== SessionsBlockedReason.AccountPolicyGate) {
 			return;
 		}
 		this.overlayRef.clear();
