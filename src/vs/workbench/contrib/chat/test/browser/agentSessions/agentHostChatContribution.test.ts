@@ -9816,6 +9816,84 @@ suite('AgentHostChatContribution', () => {
 			);
 		});
 
+		test('removes protocol pending messages rejected during hydration', async () => {
+			const { sessionHandler, agentHostService, chatService } = createContribution(disposables);
+
+			const backendSession = AgentSession.uri('copilot', 'blocked-pending-hydration');
+			agentHostService.sessionStates.set(backendSession.toString(), {
+				...createSessionState({
+					resource: backendSession.toString(),
+					provider: 'copilot',
+					title: 'Test',
+					status: SessionStatus.InProgress,
+					createdAt: new Date().toISOString(),
+					modifiedAt: new Date().toISOString(),
+				}),
+				lifecycle: SessionLifecycle.Ready,
+				activeTurn: createActiveTurn('active-turn-1', { text: 'Working', origin: { kind: MessageKind.User } }, '2025-01-01T00:00:00.000Z'),
+			});
+
+			const sessionResource = URI.from({ scheme: 'agent-host-copilot', path: '/blocked-pending-hydration' });
+			const chatSession = await sessionHandler.provideChatSessionContent(sessionResource, CancellationToken.None);
+			disposables.add(toDisposable(() => chatSession.dispose()));
+
+			const pendingRequests: IChatPendingRequest[] = [];
+			const chatModel = createPendingChatModel(sessionResource, pendingRequests);
+			chatService.applyRemotePendingRequests = () => {
+				pendingRequests.length = 0;
+				chatModel.firePendingRequestsChanged();
+			};
+
+			agentHostService.dispatchedActions.length = 0;
+			chatService.setSession(sessionResource, chatModel.model);
+
+			agentHostService.fireAction({
+				channel: buildDefaultChatUri(backendSession.toString()),
+				action: {
+					type: ActionType.ChatPendingMessageSet,
+					kind: PendingMessageKind.Queued,
+					id: 'blocked-queued',
+					message: { text: 'Do not run', origin: { kind: MessageKind.User } },
+				} as ChatAction,
+				serverSeq: 1,
+				origin: undefined,
+			});
+
+			const removals = agentHostService.dispatchedActions.filter(
+				(dispatched): dispatched is typeof dispatched & { action: Extract<ChatAction, { type: ActionType.ChatPendingMessageRemoved }> } =>
+					dispatched.action.type === ActionType.ChatPendingMessageRemoved
+			);
+			for (const [index, dispatched] of removals.entries()) {
+				agentHostService.fireAction({
+					channel: dispatched.channel,
+					action: dispatched.action,
+					serverSeq: index + 2,
+					origin: { clientId: dispatched.clientId, clientSeq: dispatched.clientSeq },
+				});
+			}
+
+			const protocolValue = agentHostService.getSubscriptionUnmanaged<ChatState>(
+				StateComponents.Chat,
+				URI.parse(buildDefaultChatUri(backendSession.toString()))
+			)?.value;
+			const protocolState = protocolValue instanceof Error ? undefined : protocolValue;
+			assert.deepStrictEqual({
+				removals: removals.map(dispatched => dispatched.action),
+				protocolPending: {
+					steeringMessage: protocolState?.steeringMessage,
+					queuedMessages: protocolState?.queuedMessages ?? [],
+				},
+			}, {
+				removals: [
+					{ type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Queued, id: 'blocked-queued' },
+				],
+				protocolPending: {
+					steeringMessage: undefined,
+					queuedMessages: [],
+				},
+			});
+		});
+
 		test('syncs text updates for existing queued pending messages', async () => {
 			const { sessionHandler, agentHostService, chatService } = createContribution(disposables);
 

@@ -1824,6 +1824,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		} finally {
 			this._remotePendingMessageProjections.delete(sessionResource);
 		}
+		this._syncPendingMessages(sessionResource, backendSession);
 	}
 
 	private _dispatchAction(channel: URI, action: ClientSessionAction | ClientChatAction, chatURI?: string): void {
@@ -4929,7 +4930,6 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 			store.add(chatModel.onDidChangePendingRequests(() => {
 				this._syncPendingMessages(sessionResource, backendSession);
 			}));
-			this._syncPendingMessages(sessionResource, backendSession);
 
 			const sessionStr = backendSession.toString();
 			const chatURI = this._chatURIsBySessionResource.get(sessionResource);

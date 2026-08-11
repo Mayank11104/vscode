@@ -192,6 +192,7 @@ export class SessionsPolicyBlockedOverlay extends Disposable {
 		const updateButton = this._register(new Button(card, { ...defaultButtonStyles }));
 		updateButton.label = localize('managedSettingsUpdate.checkForUpdates', "Check for Updates");
 		this._register(updateButton.onDidClick(() => this.commandService.executeCommand('update.checkForUpdate')));
+		updateButton.focus();
 	}
 
 	private _openVSCode(): void {

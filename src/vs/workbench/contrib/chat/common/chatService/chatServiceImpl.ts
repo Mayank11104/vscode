@@ -1192,6 +1192,10 @@ export class ChatService extends Disposable implements IChatService {
 			return { kind: 'rejected', reason: 'Session is read-only', newSessionResource };
 		}
 
+		if (await this.isManagedSettingsUpdateRequired()) {
+			return { kind: 'rejected', reason: managedSettingsUpdateRequiredReason, newSessionResource };
+		}
+
 		const hasPendingRequest = this._pendingRequests.has(sessionResource);
 
 		if (options?.queue) {
@@ -1215,6 +1219,14 @@ export class ChatService extends Disposable implements IChatService {
 					await this.removeRequest(sessionResource, request.id);
 				}
 			}
+		}
+
+		if (await this.isManagedSettingsUpdateRequired()) {
+			return { kind: 'rejected', reason: managedSettingsUpdateRequiredReason, newSessionResource };
+		}
+		if (this._pendingRequests.has(sessionResource)) {
+			this.trace('sendRequest', `Session ${sessionResource} already has a pending request`);
+			return { kind: 'rejected', reason: 'Request already in progress' };
 		}
 
 		const location = options?.location ?? model.initialLocation;

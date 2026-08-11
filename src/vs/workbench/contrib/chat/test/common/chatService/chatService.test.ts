@@ -1749,6 +1749,45 @@ suite('ChatService', () => {
 			return { resource, label: 'Test Session', timing: { created: Date.now(), lastRequestStarted: undefined, lastRequestEnded: undefined } };
 		}
 
+		test('managed settings update during materialization rejects before dispatch', async () => {
+			const realResource = URI.from({ scheme: remoteScheme, path: '/real-blocked-materialization' });
+			const materializationStarted = new DeferredPromise<void>();
+			const materialization = new DeferredPromise<IChatSessionItem>();
+			const invokedMessages: string[] = [];
+			const { service, untitledResource } = setupUntitledRemote({
+				createItem: async () => {
+					materializationStarted.complete();
+					return materialization.p;
+				},
+				invoke: async request => {
+					invokedMessages.push(request.message);
+					return {};
+				},
+			});
+			testDisposables.add((await service.acquireOrLoadSession(untitledResource, ChatAgentLocation.Chat, CancellationToken.None))!);
+
+			const pendingSend = service.sendRequest(untitledResource, 'blocked while materializing', { agentId: remoteScheme });
+			await materializationStarted.p;
+			defaultAccountService.setManagedSettingsCompatibilityError({ errorCode: 'client_update_required' });
+			materialization.complete(realItem(realResource));
+
+			const result = await pendingSend;
+			defaultAccountService.setManagedSettingsCompatibilityError(null);
+			assert.deepStrictEqual({
+				result,
+				invokedMessages,
+				pendingRequests: service.getSession(realResource)?.getPendingRequests(),
+			}, {
+				result: {
+					kind: 'rejected',
+					reason: 'Managed settings require a VS Code update',
+					newSessionResource: realResource,
+				},
+				invokedMessages: [],
+				pendingRequests: [],
+			});
+		});
+
 		test('two concurrent sends create a single real session and reject the duplicate', async () => {
 			const realResource = URI.from({ scheme: remoteScheme, path: '/real-concurrent' });
 			let createCount = 0;
