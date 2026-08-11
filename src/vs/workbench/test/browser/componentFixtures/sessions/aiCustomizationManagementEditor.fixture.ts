@@ -555,8 +555,17 @@ const mcpWorkspaceServers = [
 	makeLocalMcpServer('mcp-aws', 'AWS', LocalMcpServerScope.Workspace, 'Amazon Web Services'),
 	makeLocalMcpServer('mcp-graphql', 'GraphQL', LocalMcpServerScope.Workspace, 'GraphQL API gateway'),
 ];
+// Carries a real configuration so the end-to-end detail fixtures render the Configuration
+// section. Its URL is deliberately long and space-free: that is the string that decides whether
+// the facts grid wraps or overflows, and it only misbehaves at narrow widths.
+const webSearchConfig: IWorkbenchMcpServer['config'] = {
+	type: McpServerType.REMOTE,
+	url: 'https://mcp.example.com/v1/search/streamable-http-endpoint',
+	headers: { Authorization: '******' },
+};
+
 const mcpUserServers = [
-	makeLocalMcpServer('mcp-web-search', 'Web Search', LocalMcpServerScope.User, 'Search the web'),
+	makeLocalMcpServer('mcp-web-search', 'Web Search', LocalMcpServerScope.User, 'Search the web', webSearchConfig),
 	makeLocalMcpServer('mcp-filesystem', 'Filesystem', LocalMcpServerScope.User, 'Local file operations'),
 	makeLocalMcpServer('mcp-puppeteer', 'Puppeteer', LocalMcpServerScope.User, 'Browser automation'),
 ];
@@ -1864,6 +1873,21 @@ export default defineThemedFixtureGroup({ path: 'chat/aiCustomizations/' }, {
 			sessionResource: localSessionResource,
 			selectedSection: AICustomizationManagementSection.McpServers,
 			openFirstItem: true,
+		}),
+	}),
+
+	// The same path at a narrow width. This fixture was retired while installed rows opened
+	// nothing, and matters more now than it did then: the pane grew a configuration list whose
+	// values are commands and URLs with no spaces to wrap at, so narrow is where it breaks.
+	// The server it opens carries a long URL for exactly that reason.
+	McpServerDetailNarrow: defineComponentFixture({
+		labels: { kind: 'screenshot' },
+		render: ctx => renderEditor(ctx, {
+			sessionResource: localSessionResource,
+			selectedSection: AICustomizationManagementSection.McpServers,
+			openFirstItem: true,
+			width: 550,
+			height: 400,
 		}),
 	}),
 
