@@ -141,6 +141,7 @@ const COPILOT_PROXY_ENV_KEYS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'htt
  * Proxy env vars we set when injecting the resolved CAPI proxy.
  */
 const COPILOT_PROXY_SET_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY'] as const;
+
 async function fileExists(filePath: string): Promise<boolean> {
 	try {
 		await fs.access(filePath);
@@ -1556,8 +1557,9 @@ export class CopilotAgent extends Disposable implements IAgent {
 			// Build a clean env for the CLI subprocess, stripping Electron/VS Code vars
 			// that can interfere with the Node.js process the SDK spawns.
 			const env = createCopilotCliEnvironment();
-			// Family aliases are session-scoped through SessionConfig.model; an
-			// ambient process-wide value would leak across every session.
+			// Family aliases are host-side (prompt and tool-profile routing) and
+			// deliberately never reach the runtime; an ambient value here would
+			// re-introduce a process-wide alias for every session behind its back.
 			delete env['COPILOT_MODEL_FAMILY'];
 			await this._configureProxyEnv(env);
 
@@ -3544,8 +3546,8 @@ export class CopilotAgent extends Disposable implements IAgent {
 		const longContextWindow = this._longContextWindowFor(model.id);
 		const freeLongContext = this._isFreeLongContext(model.id);
 		const context = this._getChatContext(chat);
-		// A `family` alias routes the host's prompt and tool profile only, so the
-		// model id and its picker tuning are sent through unchanged.
+		// A `family` alias routes the host's prompt and tool profile only. The
+		// selected model's reasoning-effort override is resolved separately.
 		if (context.isPeerChat) {
 			await context.target?.setModel(model.id, resolveCopilotReasoningEffort(model, this._configurationService, this._logService, context.sessionId), getCopilotContextTier(model, longContextWindow, freeLongContext));
 			const backing = this._chatBackings.get(context.chatKey);
