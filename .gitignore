@@ -49,3 +49,6 @@ dist
 .github/prompts/*.local.prompt.md
 .agents/skills/.local/
 .github/skills/.local/
+ARCHITECTURE_OVERVIEW.md
+CODEBASE_MAP.md
+DO_NOT_MODIFY.md

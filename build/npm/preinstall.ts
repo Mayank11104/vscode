@@ -132,14 +132,18 @@ function installHeaders() {
 	const local = getHeaderInfo(path.join(import.meta.dirname, '..', '..', '.npmrc'));
 	const remote = getHeaderInfo(path.join(import.meta.dirname, '..', '..', 'remote', '.npmrc'));
 
+	// When shell:true is used on Windows, execFileSync joins file+args into a single
+	// string without quoting the file path, which breaks if the path contains spaces.
+	const node_gyp_cmd = process.platform === 'win32' ? `"${node_gyp}"` : node_gyp;
+
 	if (local !== undefined) {
 		// Both disturl and target come from a file checked into our repository
-		child_process.execFileSync(node_gyp, ['install', '--dist-url', local.disturl, local.target], { shell: true });
+		child_process.execFileSync(node_gyp_cmd, ['install', '--dist-url', local.disturl, local.target], { shell: true });
 	}
 
 	if (remote !== undefined) {
 		// Both disturl and target come from a file checked into our repository
-		child_process.execFileSync(node_gyp, ['install', '--dist-url', remote.disturl, remote.target], { shell: true });
+		child_process.execFileSync(node_gyp_cmd, ['install', '--dist-url', remote.disturl, remote.target], { shell: true });
 	}
 
 	// Overlay any custom headers shipped in build/npm/gyp/custom-headers on top of
